@@ -1,0 +1,1186 @@
+/* ---- Mood-reactive theme tokens ----
+     Registering these as typed custom properties (@property) lets the
+     browser animate them smoothly whenever JS updates them in
+     applyMoodTheme(), instead of the colors just snapping. Browsers that
+     don't support @property still work fine - the colors just change
+     instantly rather than fading. */
+  @property --bg-top { syntax: '<color>'; inherits: true; initial-value: #3a2b3f; }
+  @property --bg-bottom { syntax: '<color>'; inherits: true; initial-value: #1b1420; }
+  @property --accent { syntax: '<color>'; inherits: true; initial-value: #ff8fb1; }
+  @property --accent-light { syntax: '<color>'; inherits: true; initial-value: #ffd6e8; }
+  @property --muted { syntax: '<color>'; inherits: true; initial-value: #b79bc4; }
+  @property --bot-bubble { syntax: '<color>'; inherits: true; initial-value: #4a3453; }
+  /* ---- Roundboth split-theme tokens ----
+     Roundboth mode runs TWO live mood palettes at once - Bina's (reusing
+     the tokens above) on the left half, Rone's on the right - so the
+     background itself shows how each of them is actually feeling right
+     now, blending smoothly into each other at the seam. These mirror the
+     tokens above 1:1, just suffixed "-r" for Rone's half, and are typed
+     the same way so they crossfade instead of snapping whenever either of
+     their moods changes. */
+  @property --bg-top-r { syntax: '<color>'; inherits: true; initial-value: #2a2c38; }
+  @property --bg-bottom-r { syntax: '<color>'; inherits: true; initial-value: #14151d; }
+  @property --accent-r { syntax: '<color>'; inherits: true; initial-value: #7b8fc9; }
+  @property --accent-light-r { syntax: '<color>'; inherits: true; initial-value: #d0d8f0; }
+  @property --muted-r { syntax: '<color>'; inherits: true; initial-value: #8f97b0; }
+  @property --bot-bubble-r { syntax: '<color>'; inherits: true; initial-value: #333750; }
+  :root {
+    --bg-top: #3a2b3f;
+    --bg-bottom: #1b1420;
+    --accent: #ff8fb1;
+    --accent-light: #ffd6e8;
+    --muted: #b79bc4;
+    --bot-bubble: #4a3453;
+    --accent-rgb: 255,143,177;
+    --bg-top-rgb: 58,43,63;
+    --bg-top-r: #2a2c38;
+    --bg-bottom-r: #14151d;
+    --accent-r: #7b8fc9;
+    --accent-light-r: #d0d8f0;
+    --muted-r: #8f97b0;
+    --bot-bubble-r: #333750;
+    --accent-rgb-r: 123,143,201;
+    --bg-top-rgb-r: 42,44,56;
+    --theme-speed: 1.4s;
+  }
+
+  /* PERF: the old ruleset here put a `transition: background-color, color,
+     border-color` on the universal `*` selector. That meant literally every
+     element on the page - every bubble, every button, every control icon -
+     got restyled and animated on every theme/mood change, which was the
+     single biggest source of jank/lag, and it got worse the longer the chat
+     log grew. Colors that need to fade now get a *scoped* transition
+     declared right on their own selector further down (bubbles, buttons,
+     badges, corner controls, drawers) instead of touching the whole DOM. */
+  * {
+    box-sizing: border-box; -webkit-tap-highlight-color: transparent;
+  }
+  html, body {
+    margin: 0;
+    height: 100%;
+    overscroll-behavior: none;
+  }
+  body {
+    font-family: 'Segoe UI', sans-serif;
+    background: radial-gradient(circle at top, var(--bg-top), var(--bg-bottom));
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+    height: 100dvh;
+    color: #fff;
+  }
+
+  /* ---- Roundboth: two mood palettes sharing one screen ----
+     Left half runs Bina's live theme (--bg-top/--accent/etc, same tokens
+     the solo view already animates), right half runs Rone's (the -r
+     tokens above) - so the room visibly looks like "her side" and "his
+     side" and drifts as their individual moods do. Because every color
+     here is a typed @property, JS can just update the custom properties
+     (exactly like the solo applyMoodTheme() already does) and this whole
+     gradient crossfades on its own, no keyframe juggling required. */
+  body.bothMode {
+    background:
+      radial-gradient(ellipse 70% 55% at 12% -5%, rgba(var(--accent-rgb),0.35), transparent 65%),
+      radial-gradient(ellipse 70% 55% at 88% -5%, rgba(var(--accent-rgb-r),0.35), transparent 65%),
+      linear-gradient(90deg, var(--bg-top) 0%, var(--bg-bottom) 32%, var(--bg-bottom-r) 68%, var(--bg-top-r) 100%);
+    transition: --bg-top var(--theme-speed) ease, --bg-bottom var(--theme-speed) ease,
+      --bg-top-r var(--theme-speed) ease, --bg-bottom-r var(--theme-speed) ease,
+      --accent-rgb var(--theme-speed) ease, --accent-rgb-r var(--theme-speed) ease;
+  }
+  /* A soft vertical seam where the two palettes meet, glowing with
+     whichever accent colors are currently active on each side - it's the
+     one part of the split that's allowed to feel a little theatrical. */
+  body.bothMode::before {
+    content: "";
+    position: fixed;
+    inset: 0;
+    z-index: 0;
+    pointer-events: none;
+    background: linear-gradient(90deg,
+      transparent 42%,
+      rgba(var(--accent-rgb), 0.28) 49%,
+      rgba(var(--accent-rgb-r), 0.28) 51%,
+      transparent 58%);
+    mix-blend-mode: screen;
+    opacity: 0.8;
+    animation: seamPulse 5s ease-in-out infinite;
+    transition: --accent-rgb var(--theme-speed) ease, --accent-rgb-r var(--theme-speed) ease;
+  }
+  @keyframes seamPulse {
+    0%, 100% { opacity: 0.55; }
+    50% { opacity: 0.9; }
+  }
+  /* Ambient motes pick a side at creation time (see the mote-spawning JS)
+     and tint themselves to match - reinforcing the split without needing
+     twice as many DOM nodes. Outside Roundboth this is a no-op since
+     .bothMode never applies. */
+  body.bothMode .mote.mote-r {
+    background: radial-gradient(circle, rgba(var(--accent-rgb-r),0.5), transparent 70%);
+    transition: background var(--theme-speed) ease;
+  }
+
+  /* ambient floating motes - tinted with the current accent so they shift
+     with the mood theme too. will-change promotes each mote to its own
+     compositor layer so the drift animation is pure GPU transform/opacity
+     work - no repaint per frame - letting it ride a 120Hz/144Hz display's
+     native refresh rate instead of capping out choppy on the main thread. */
+  .motes { position: fixed; inset: 0; pointer-events: none; z-index: 0; contain: strict; }
+  .mote {
+    position: absolute; border-radius: 50%;
+    background: radial-gradient(circle, rgba(var(--accent-rgb),0.5), transparent 70%);
+    animation: drift 14s ease-in-out infinite;
+    transition: background var(--theme-speed) ease;
+    will-change: transform, opacity;
+  }
+  @keyframes drift {
+    0%, 100% { transform: translateY(0) translateX(0); opacity: .45; }
+    50% { transform: translateY(-30px) translateX(12px); opacity: .85; }
+  }
+
+  /* ---- App shell (mobile, edge-to-edge) ---- */
+  .app {
+    position: relative;
+    z-index: 1;
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    max-width: 480px;
+    margin: 0 auto;
+    width: 100%;
+    padding-top: env(safe-area-inset-top);
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+
+  header {
+    flex-shrink: 0;
+    /* PERF/FIX: cornerControls below floats at
+       top: calc(env(safe-area-inset-top) + 10px) with 34px-tall buttons,
+       so its bottom edge sits at safe-area + 44px. Header used to start
+       at a flat 14px, which put the character switcher (its first child)
+       directly underneath those buttons - covered visually AND blocked
+       from taps, since the absolutely-positioned buttons sit on top in
+       the stacking order regardless of what's "under" them in the DOM.
+       Padding the header down below that band fixes both. */
+    padding: calc(env(safe-area-inset-top) + 38px) 16px 8px;
+    text-align: center;
+    /* PERF: this used to also carry backdrop-filter: blur(20px)
+       saturate(160%). The header is a fixed strip sitting right above
+       the scrolling chat, so that blur had to be recomputed on every
+       single scroll frame for whatever message content passed underneath
+       it - this was the 'foggy' laggy feeling over the text bubbles.
+       A slightly more opaque gradient gets a similar soft look for
+       basically free, with no live blur to keep recalculating. */
+    background: linear-gradient(180deg, rgba(var(--bg-top-rgb),0.94), rgba(var(--bg-top-rgb),0.75) 70%, transparent);
+    border-bottom: 1px solid rgba(255,255,255,0.06);
+    position: relative;
+    z-index: 2;
+  }
+  h1 {
+    font-size: 17px;
+    color: var(--accent-light);
+    margin: 4px 0 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+  }
+  .tomato { font-size: 16px; animation: bob 2.4s ease-in-out infinite; }
+  @keyframes bob {
+    0%, 100% { transform: translateY(0) rotate(0deg); }
+    50% { transform: translateY(-3px) rotate(-6deg); }
+  }
+  .sub { color: var(--muted); font-size: 11px; margin-top: 1px; }
+  .lore { color: #7d6789; font-size: 10px; margin-top: 2px; font-style: italic; }
+
+  /* ---- Avatar portrait ---- */
+  .portrait-wrap {
+    display: flex;
+    justify-content: center;
+    margin: 2px 0 0;
+  }
+  .portrait {
+    position: relative;
+    width: 112px;
+    height: 105px;
+    filter: drop-shadow(0 6px 14px rgba(0,0,0,0.4));
+    transition: filter .3s ease;
+    /* PERF: drop-shadow is one of the most expensive CSS filters to
+       re-rasterize - the old build stacked TWO drop-shadows on top of an
+       infinite floating transform animation, forcing a full re-blur of the
+       portrait every single frame. Promoting it to its own compositor
+       layer means the (static) shadow is rasterized once, then just moved
+       by the GPU each frame like a sprite - this alone removes most of the
+       per-frame cost of the idle float. */
+    will-change: transform;
+    transform: translateZ(0);
+  }
+  .portrait.deceased {
+    filter: grayscale(1) brightness(0.55) drop-shadow(0 4px 10px rgba(0,0,0,0.5));
+    animation: none !important;
+  }
+  .portrait.deceased .eyes-open { opacity: 0 !important; }
+  .portrait.deceased .eyes-closed { opacity: 1 !important; }
+  .portrait.deceased .expr-happy,
+  .portrait.deceased .expr-crying,
+  .portrait.deceased .expr-angry,
+  .portrait.deceased .expr-evil,
+  .portrait.deceased .expr-confused { opacity: 0 !important; }
+  .deceasedMarker {
+    text-align: center;
+    font-size: 11px;
+    color: #a99bb0;
+    margin-top: 2px;
+    letter-spacing: 0.5px;
+  }
+  .portrait img {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    transition: opacity .25s ease;
+  }
+  .portrait .eyes-open { opacity: 0; }
+  .portrait .eyes-closed { opacity: 1; }
+  .portrait.awake .eyes-open { opacity: 1; }
+  .portrait.awake .eyes-closed { opacity: 0; }
+
+  /* ---- Mood expressions - layered above eyes-closed/eyes-open, driven by
+     characterStatus.mood via the .mood-* class the JS toggles on #portrait.
+     Only shown while idle (not .awake, not .deceased) - the moment she's
+     "thinking" or has passed, those states win outright, same as before. */
+  .portrait .expr-happy,
+  .portrait .expr-crying,
+  .portrait .expr-angry,
+  .portrait .expr-evil,
+  .portrait .expr-confused { opacity: 0; }
+
+  .portrait.mood-happy:not(.awake) .eyes-closed { opacity: 0; }
+  .portrait.mood-happy:not(.awake) .expr-happy { opacity: 1; }
+  .portrait.mood-crying:not(.awake) .eyes-closed { opacity: 0; }
+  .portrait.mood-crying:not(.awake) .expr-crying { opacity: 1; }
+  .portrait.mood-angry:not(.awake) .eyes-closed { opacity: 0; }
+  .portrait.mood-angry:not(.awake) .expr-angry { opacity: 1; }
+  .portrait.mood-evil:not(.awake) .eyes-closed { opacity: 0; }
+  .portrait.mood-evil:not(.awake) .expr-evil { opacity: 1; }
+  .portrait.mood-confused:not(.awake) .eyes-closed { opacity: 0; }
+  .portrait.mood-confused:not(.awake) .expr-confused { opacity: 1; }
+
+  /* ---- Status bars (hunger / cleanliness) - the model narrates these ---- */
+  .portrait-row {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 14px;
+    margin: 4px 0 2px;
+  }
+
+  /* ---- Character switcher ---- */
+  .charSwitcher {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 6px;
+    padding: 6px 8px 2px;
+  }
+  .charTab {
+    background: rgba(255,255,255,0.06);
+    border: 1px solid rgba(255,255,255,0.08);
+    color: var(--muted);
+    font-size: 12px;
+    font-weight: 600;
+    padding: 5px 12px;
+    border-radius: 999px;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: background .25s ease, color .25s ease, transform .3s var(--ease-elastic), border-color .25s ease, box-shadow .3s ease;
+  }
+  .charTab:active:not(.disabled) { transform: scale(var(--press-scale)); filter: brightness(1.1); }
+  @media (max-width: 360px) {
+    .charTab { font-size: 11px; padding: 4px 9px; }
+  }
+  .charTab:hover:not(.disabled) { transform: translateY(-1px); color: var(--accent-light); }
+  .charTab.active {
+    background: linear-gradient(135deg, var(--accent), rgba(var(--accent-rgb),0.6));
+    border-color: transparent;
+    color: #fff;
+    box-shadow: 0 2px 8px rgba(var(--accent-rgb),0.4);
+    transition: background .2s ease, color .2s ease, transform .15s var(--ease-spring, cubic-bezier(.34,1.56,.64,1)),
+      border-color .2s ease, box-shadow var(--theme-speed) ease;
+  }
+  /* The Roundboth tab itself is half-and-half when active, a little
+     preview of the split room it opens into. */
+  .charTab[data-character="both"].active {
+    background: linear-gradient(90deg, var(--accent) 0%, var(--accent) 45%, var(--accent-r) 55%, var(--accent-r) 100%);
+    box-shadow: 0 2px 10px rgba(var(--accent-rgb),0.3), 0 2px 10px rgba(var(--accent-rgb-r),0.3);
+    background-size: 200% 100%;
+    animation: bothTabShimmer 3.5s ease-in-out infinite;
+  }
+  @keyframes bothTabShimmer {
+    0%, 100% { background-position: 0% 0; }
+    50% { background-position: 15% 0; }
+  }
+  .charTab.disabled { opacity: 0.4; cursor: default; }
+  .charTab.disabled:hover { transform: none; }
+  .statusBars {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    width: 36px;
+  }
+  .statusBar { display: flex; flex-direction: column; align-items: center; gap: 3px; }
+  .statusBar .icon { font-size: 14px; line-height: 1; }
+  .statusBar .track {
+    width: 9px;
+    height: 32px;
+    border-radius: 6px;
+    background: rgba(255,255,255,0.12);
+    border: 1px solid rgba(255,255,255,0.25);
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-end;
+    overflow: hidden;
+  }
+  .statusBar .fill {
+    width: 100%;
+    border-radius: 5px;
+    position: relative;
+    overflow: hidden;
+    transition: height .6s var(--ease-elastic), background-color .6s ease, box-shadow var(--theme-speed) ease;
+    box-shadow: 0 0 8px 1px rgba(255,255,255,0.15);
+  }
+  .statusBar.hunger .fill { background: linear-gradient(180deg, #ffb37a, #ff7a59); }
+  .statusBar.clean .fill { background: linear-gradient(180deg, #8fd3ff, #4aa8e0); }
+  .statusBar.affection .fill { background: linear-gradient(180deg, #ff9ec7, #ff4f8b); }
+
+  /* ---- Roundboth: dual-companion header ---- */
+  .dualPortraitRow {
+    display: flex;
+    justify-content: center;
+    align-items: flex-start;
+    gap: 26px;
+    margin: 6px 0 2px;
+  }
+  .miniCompanion {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 5px;
+    width: 108px;
+  }
+  .miniPortrait {
+    width: 74px;
+    height: 70px;
+    position: relative;
+    filter: drop-shadow(0 4px 10px rgba(0,0,0,0.4));
+    transition: filter .3s ease;
+  }
+  .miniPortrait img { width: 100%; height: 100%; object-fit: contain; }
+  .miniPortrait.affection-glow { filter: drop-shadow(0 4px 16px rgba(255,110,170,0.6)) saturate(1.15); }
+  .miniPortrait.affection-low { filter: grayscale(0.35) brightness(0.85) drop-shadow(0 4px 10px rgba(80,60,100,0.35)); }
+  .miniName { font-size: 11px; font-weight: 700; color: var(--accent-light); transition: color var(--theme-speed) ease; }
+  /* Each mini-companion's own name/glow reads in HER currently-active
+     accent rather than a shared one, echoing the split background so the
+     "who's whose color" mapping stays consistent everywhere on screen. */
+  #miniBina .miniName { color: var(--accent-light); }
+  #miniBina .miniPortrait { transition: filter var(--theme-speed) ease; }
+  #miniRone .miniName { color: var(--accent-light-r); }
+  #miniRone .miniPortrait { transition: filter var(--theme-speed) ease; }
+  #miniRone .miniPortrait.affection-glow { filter: drop-shadow(0 4px 16px rgba(var(--accent-rgb-r),0.6)) saturate(1.15); }
+  .dualPortraitRow { animation: popIn .38s var(--ease-spring, ease); }
+  #bothHeader.visible, #singleHeader.visible { animation: headerSwap .32s var(--ease-smooth, ease); }
+  @keyframes headerSwap {
+    from { opacity: 0; transform: translateY(-6px) scale(.98); }
+    to   { opacity: 1; transform: translateY(0) scale(1); }
+  }
+  .miniBars { display: flex; gap: 7px; }
+  .miniBar {
+    width: 8px;
+    height: 26px;
+    border-radius: 5px;
+    background: rgba(255,255,255,0.12);
+    border: 1px solid rgba(255,255,255,0.25);
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-end;
+    overflow: hidden;
+  }
+  .miniFill { width: 100%; border-radius: 4px; transition: height .6s ease; }
+  .miniBar.hunger .miniFill { background: linear-gradient(180deg, #ffb37a, #ff7a59); }
+  .miniBar.affection .miniFill { background: linear-gradient(180deg, #ff9ec7, #ff4f8b); }
+  .miniBar.clean .miniFill { background: linear-gradient(180deg, #8fd3ff, #4aa8e0); }
+  .miniMood { font-size: 10px; color: var(--muted); text-transform: capitalize; }
+
+  .bothControls { display: flex; justify-content: center; gap: 8px; padding: 6px 14px 0; flex-wrap: wrap; }
+  .bothControls .iconBtn { font-size: 12px; padding: 6px 12px; width: auto; }
+
+  /* Speaker-tinted bubbles so it's obvious at a glance who's talking in
+     the shared Roundboth room, without needing to re-read the name label
+     every time. */
+  .msg.both-bina { border-left: 3px solid #ff8fb1; }
+  .msg.both-rone { border-left: 3px solid #7b8fc9; }
+  .bothSpeakerLabel { font-size: 10px; font-weight: 700; opacity: 0.75; margin-bottom: 3px; letter-spacing: 0.3px; }
+
+  /* ---- Mood badge - shows Roundbina's current emotional read, driven by
+     how affectionately (or harshly) the person has been treating her ---- */
+  .moodBadge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    margin: 2px auto 0;
+    padding: 2px 10px;
+    border-radius: 999px;
+    background: rgba(255,255,255,0.08);
+    border: 1px solid rgba(255,255,255,0.18);
+    color: var(--accent-light);
+    font-size: 11px;
+    text-transform: capitalize;
+    width: fit-content;
+  }
+
+  /* Subtle emotional tint on the portrait itself - warmer/brighter when
+     adored, cooler/duller when she's hurting. Layers on top of (and never
+     overrides) the .deceased state handled elsewhere. */
+  .portrait.affection-high:not(.deceased) { filter: drop-shadow(0 6px 20px rgba(255,110,170,0.6)) saturate(1.15); }
+  .portrait.affection-low:not(.deceased) { filter: grayscale(0.35) brightness(0.85) drop-shadow(0 4px 10px rgba(80,60,100,0.35)); }
+
+  /* Roundrone doesn't share Bina's rose/pink emotional-tint palette - these
+     glow/desaturate filters (and the pink "awake" glow below) were built
+     for her and read as a mismatched pink cast over Rone's cooler blue art,
+     so all of it is switched off whenever he's the one being shown. Higher
+     specificity than the plain .portrait rules above/below thanks to the
+     body class, so this wins regardless of source order. */
+  body.char-rone-active .portrait.affection-high:not(.deceased),
+  body.char-rone-active .portrait.affection-low:not(.deceased),
+  body.char-rone-active .portrait.awake {
+    filter: none;
+  }
+  #miniRonePortrait.affection-glow,
+  #miniRonePortrait.affection-low {
+    filter: none;
+  }
+
+  /* Brief fierce flourish when she defends herself against an illegitimate
+     kill attempt (see triggerSamuraiDefense()). Layers on top of whatever
+     affection tint is already active, then removes itself after ~2.6s. */
+  .portrait.samurai-mode:not(.deceased) {
+    filter: drop-shadow(0 6px 22px rgba(255,60,60,0.65)) contrast(1.15) saturate(1.25);
+    animation: samuraiShake 0.4s ease-in-out 3;
+  }
+  @keyframes samuraiShake {
+    0%, 100% { transform: translateX(0) rotate(0deg); }
+    25% { transform: translateX(-5px) rotate(-3deg); }
+    75% { transform: translateX(5px) rotate(3deg); }
+  }
+
+  /* ---- Chat area ---- */
+  .chat {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+    padding: 10px 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    scroll-behavior: smooth;
+    /* PERF: contain:layout lets the browser treat scrolling here as its
+       own isolated box instead of re-checking the rest of the page's
+       layout on every scroll/resize event. */
+    contain: layout style;
+  }
+  .chat::-webkit-scrollbar { width: 6px; }
+  .chat::-webkit-scrollbar-thumb { background: #5a3f5f; border-radius: 4px; }
+
+  /* Wraps #chat so the jump-to-bottom button can float over the message
+     list, positioned relative to the scroll area itself (not the whole
+     viewport) - it lands right above the input bar regardless of that
+     bar's height (which shifts with env(safe-area-inset-bottom)). */
+  .chatWrap {
+    flex: 1;
+    min-height: 0;
+    position: relative;
+    display: flex;
+    flex-direction: column;
+  }
+  .scrollToBottomBtn {
+    position: absolute;
+    left: 50%;
+    bottom: 14px;
+    transform: translateX(-50%) translateY(12px) scale(0.85);
+    width: 40px;
+    height: 40px;
+    border-radius: 50%;
+    border: none;
+    background: var(--accent);
+    color: #2a1f30;
+    font-size: 17px;
+    font-weight: bold;
+    line-height: 1;
+    cursor: pointer;
+    box-shadow: 0 4px 14px rgba(0,0,0,0.35);
+    opacity: 0;
+    pointer-events: none;
+    visibility: hidden;
+    transition: opacity 0.18s ease, transform 0.18s ease, visibility 0.18s;
+    z-index: 4;
+  }
+  .scrollToBottomBtn.visible {
+    opacity: 1;
+    pointer-events: auto;
+    visibility: visible;
+    transform: translateX(-50%) translateY(0) scale(1);
+  }
+  .scrollToBottomBtn:active { transform: translateX(-50%) translateY(0) scale(0.9); }
+
+  .msg {
+    max-width: 78%;
+    padding: 9px 13px;
+    border-radius: 16px;
+    font-size: 15px;
+    line-height: 1.4;
+    word-break: break-word;
+    white-space: pre-wrap;
+  }
+  .bot { background: var(--bot-bubble); color: #ffe0ec; align-self: flex-start; border-bottom-left-radius: 4px; }
+  .user { background: var(--accent); color: #2a1f30; align-self: flex-end; border-bottom-right-radius: 4px; }
+  .system-msg { font-size: 11px; color: #8a7393; text-align: center; align-self: center; font-style: italic; }
+
+  /* ---- Timeline manipulation controls (regenerate / rewind / delete / edit) ----
+     A tiny row of icon buttons tucked under each user/bot bubble. Tapping the
+     bubble body itself (outside a control button) triggers a rewind-to-here. */
+  .msg { cursor: pointer; position: relative; }
+  .msg.system-msg { cursor: default; }
+  .msgControls {
+    display: flex; gap: 4px; margin-top: 4px;
+    opacity: 0.55; transition: opacity .15s ease;
+  }
+  .msg:hover .msgControls, .msg:active .msgControls { opacity: 1; }
+  .msgControlBtn {
+    background: rgba(0,0,0,0.18); border: none; color: inherit;
+    font-size: 11px; line-height: 1; padding: 3px 6px; border-radius: 8px;
+    cursor: pointer;
+  }
+  .user .msgControlBtn { background: rgba(0,0,0,0.12); }
+  .msgControlBtn:hover { background: rgba(0,0,0,0.32); }
+
+  .typing {
+    align-self: flex-start; display: flex; gap: 4px;
+    background: var(--bot-bubble); padding: 10px 14px; border-radius: 16px; border-bottom-left-radius: 4px;
+  }
+  .typing span { width: 6px; height: 6px; border-radius: 50%; background: var(--accent-light); animation: bounce 1.1s infinite ease-in-out; }
+  .typing span:nth-child(2) { animation-delay: .15s; }
+  .typing span:nth-child(3) { animation-delay: .3s; }
+  @keyframes bounce {
+    0%, 60%, 100% { transform: translateY(0); opacity: .6; }
+    30% { transform: translateY(-5px); opacity: 1; }
+  }
+
+  /* ---- Setup panel (model + key) ---- */
+  .setup {
+    flex-shrink: 0;
+    margin: 0 14px 8px;
+    padding: 10px 12px;
+    background: #241a29;
+    border-radius: 14px;
+    border: 1px solid #4a3653;
+  }
+  .setup label {
+    display: block; font-size: 11px; color: var(--muted); margin-bottom: 4px;
+  }
+  .setup select, .setup .keyRow input {
+    width: 100%;
+    padding: 10px 12px;
+    border-radius: 12px;
+    border: none;
+    outline: none;
+    background: #3a2b40;
+    color: #fff;
+    font-size: 14px;
+  }
+  .keyRow { display: flex; gap: 6px; margin-top: 8px; }
+  .keyRow input { flex: 1; min-width: 0; }
+  .keyRow button {
+    background: var(--accent); border: none; color: #2a1f30; font-weight: bold;
+    padding: 0 16px; border-radius: 12px; cursor: pointer; font-size: 13px;
+  }
+
+  /* ---- Bottom input bar ---- */
+  .inputBar {
+    flex-shrink: 0;
+    display: flex;
+    align-items: flex-end;
+    gap: 8px;
+    padding: 10px 14px calc(10px + env(safe-area-inset-bottom));
+    background: linear-gradient(180deg, rgba(27,20,32,0.55), var(--glass-bg-strong));
+    backdrop-filter: var(--glass-blur);
+    -webkit-backdrop-filter: var(--glass-blur);
+    border-top: var(--glass-border-thin);
+    box-shadow: 0 -4px 14px rgba(0,0,0,0.25);
+  }
+  .inputBar textarea {
+    flex: 1; min-width: 0;
+    padding: 12px 16px;
+    border-radius: 22px;
+    border: none;
+    outline: none;
+    background: #3a2b40;
+    color: #fff;
+    font-size: 15px;
+    font-family: inherit;
+    resize: none;
+    /* Auto-grows as you type (see the "input" listener on chatInput in
+       the script) instead of scrolling text sideways in a single fixed
+       line, which is what made editing what you'd typed so fiddly. Caps
+       out around 6 lines tall so it can't eat the whole chat, then
+       scrolls internally past that. */
+    max-height: 132px;
+    overflow-y: auto;
+    line-height: 1.35;
+  }
+  .inputBar textarea::placeholder { color: #9a84a8; }
+  .inputBar button {
+    background: var(--accent); border: none; color: #2a1f30; font-weight: bold;
+    padding: 0 20px; border-radius: 22px; cursor: pointer; font-size: 14px;
+    height: 45px; flex-shrink: 0;
+  }
+  button:disabled { background: #5a4552; color: #8a7393; cursor: default; }
+  button:active { transform: scale(0.96); }
+  input:focus-visible, textarea:focus-visible, select:focus-visible, button:focus-visible {
+    outline: 2px solid var(--accent); outline-offset: 2px;
+  }
+
+  .cornerControls {
+    position: absolute;
+    top: calc(env(safe-area-inset-top) + 10px);
+    right: 10px;
+    z-index: 55;
+    display: flex;
+    gap: 8px;
+  }
+  .cornerBtn {
+    width: 34px; height: 34px; border-radius: 50%;
+    background: rgba(var(--bg-top-rgb),0.55);
+    border: 1px solid rgba(255,255,255,0.15);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 16px; color: var(--accent-light); cursor: pointer;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+    transition: transform .3s var(--ease-elastic), background var(--theme-speed) ease, box-shadow .25s ease;
+    padding: 0;
+  }
+  .cornerBtn:hover { background: rgba(var(--bg-top-rgb),0.85); transform: translateY(-2px) scale(1.06); box-shadow: 0 4px 14px rgba(0,0,0,0.4); }
+  .cornerBtn:active { transform: scale(var(--press-scale)); filter: brightness(1.1); }
+  .cornerBtn:disabled { background: rgba(90,69,82,0.55); color: #8a7393; }
+
+  .iconBtn {
+    background: transparent; color: var(--muted); font-size: 11px;
+    padding: 4px 6px; text-decoration: underline; border: none;
+  }
+  .iconBtn:hover { color: var(--accent-light); }
+  .settingsRow { display: flex; justify-content: center; margin-top: 2px; }
+
+  /* ---- Settings drawer (pulls in from the right) ---- */
+  .drawerBackdrop {
+    position: fixed; inset: 0;
+    background: rgba(10, 6, 12, 0.55);
+    z-index: 70;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.25s ease;
+  }
+  .drawerBackdrop.open { opacity: 1; pointer-events: auto; }
+
+  .settingsDrawer {
+    position: fixed;
+    top: 0; right: 0;
+    height: 100%;
+    height: 100dvh;
+    width: min(78vw, 300px);
+    background: var(--glass-bg);
+    backdrop-filter: var(--glass-blur);
+    -webkit-backdrop-filter: var(--glass-blur);
+    border-left: var(--glass-border-thin);
+    box-shadow: -10px 0 32px rgba(0,0,0,0.55);
+    z-index: 71;
+    transform: translateX(100%);
+    transition: transform 0.36s var(--ease-elastic);
+    display: flex;
+    flex-direction: column;
+    box-sizing: border-box;
+    /* FIX: the drawer had no scroll of its own, so once Theme/API
+       key/proxy/model/prompt sections were all added the bottom ones were
+       simply clipped off-screen with no way to reach them. overflow-y:auto
+       here plus min-height:0 on the section list below lets the drawer's
+       body scroll while it stays pinned to the right edge. */
+    overflow: hidden;
+  }
+  .settingsDrawer.open { transform: translateX(0); }
+
+  .drawerHeader {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-shrink: 0;
+    padding: 16px 16px 10px;
+    padding-top: calc(16px + env(safe-area-inset-top));
+    background: rgba(24,17,28,0.98);
+    position: relative;
+    z-index: 2;
+    box-shadow: 0 6px 10px -6px rgba(0,0,0,0.35);
+  }
+  .drawerHeader h2 {
+    font-size: 14px;
+    color: var(--accent-light);
+    margin: 0;
+  }
+  .drawerCloseBtn {
+    background: transparent; border: none; color: var(--muted);
+    font-size: 20px; line-height: 1; cursor: pointer; padding: 4px 8px;
+  }
+  .drawerCloseBtn:hover { color: var(--accent-light); }
+
+  /* Scrollable body: everything except the pinned header lives in here now
+     (see the JS-free structural note below - drawerHeader stays first
+     child/sticky, this wraps the rest). */
+  .drawerBody {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior: contain;
+    padding: 4px 16px 16px;
+    padding-bottom: calc(16px + env(safe-area-inset-bottom));
+    display: flex;
+    flex-direction: column;
+    gap: 18px;
+    /* small always-visible scrollbar hint so it doesn't look like a dead end */
+    scrollbar-gutter: stable;
+  }
+  .drawerBody::-webkit-scrollbar { width: 6px; }
+  .drawerBody::-webkit-scrollbar-thumb { background: #5a3f5f; border-radius: 4px; }
+
+  .drawerSection {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .drawerSection .tokenControl label { white-space: normal; }
+  .drawerSection .iconBtn {
+    text-decoration: none;
+    background: #3a2b40;
+    border-radius: 10px;
+    padding: 10px 12px;
+    text-align: left;
+    font-size: 13px;
+  }
+  .drawerSection .iconBtn:hover { background: #4a3653; }
+
+  .tokenControl {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex: 1;
+    min-width: 140px;
+    font-size: 11px;
+    color: var(--muted);
+  }
+  .tokenControl label { white-space: nowrap; }
+  .tokenControl input[type="range"] {
+    flex: 1;
+    accent-color: var(--accent);
+  }
+
+  .drawerSection label {
+    display: block; font-size: 11px; color: var(--muted); margin-bottom: 2px;
+  }
+
+  /* ---- Theme picker swatches ----
+     Each swatch is a small circular preview of that theme's accent/bg
+     colors. The active one gets a ring; picking one calls setUserTheme()
+     which reuses the same @property-animated custom properties as the
+     mood-driven auto-theme, so switching still crossfades smoothly instead
+     of snapping. "Auto" hands control back to applyMoodTheme(). */
+  .themeSwatchRow {
+    display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px;
+  }
+  .themeSwatch {
+    width: 34px; height: 34px; border-radius: 50%;
+    border: 2px solid transparent;
+    cursor: pointer; padding: 0; position: relative;
+    box-shadow: 0 2px 6px rgba(0,0,0,0.3);
+    transition: transform .3s var(--ease-elastic), border-color .25s ease, box-shadow .3s ease;
+    flex-shrink: 0;
+  }
+  .themeSwatch:hover { transform: scale(1.1); }
+  .themeSwatch:active { transform: scale(var(--press-scale)); }
+  .themeSwatch.active { border-color: #fff; box-shadow: 0 2px 6px rgba(0,0,0,0.3), 0 0 0 3px rgba(255,255,255,0.15), 0 0 16px -2px rgba(var(--accent-rgb),0.7); }
+  .themeSwatch.active::after {
+    content: "✓"; position: absolute; inset: 0;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 13px; color: #fff; text-shadow: 0 1px 3px rgba(0,0,0,0.6);
+  }
+  .themeSwatch.auto {
+    display: flex; align-items: center; justify-content: center;
+    background: conic-gradient(from 0deg, #ff6fa8, #a5aeff, #7ba7c9, #c97b7b, #ff6fa8);
+    font-size: 14px;
+  }
+  .drawerSection input[type="text"],
+  .drawerSection input[type="password"],
+  .drawerSection textarea {
+    width: 100%;
+    padding: 8px 10px;
+    border-radius: 10px;
+    border: none;
+    outline: none;
+    background: #3a2b40;
+    color: #fff;
+    font-size: 12px;
+    font-family: inherit;
+    resize: vertical;
+    box-sizing: border-box;
+  }
+
+  /* ---- Chat history data viewer (accessed from Settings) ---- */
+  .historyBackdrop {
+    position: fixed; inset: 0;
+    background: rgba(10, 6, 12, 0.6);
+    z-index: 80;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.25s ease;
+  }
+  .historyBackdrop.open { opacity: 1; pointer-events: auto; }
+
+  .historyModal {
+    position: fixed;
+    left: 50%; top: 50%;
+    transform: translate(-50%, -50%) scale(0.96);
+    width: min(90vw, 420px);
+    max-height: 80vh;
+    background: var(--glass-bg-strong);
+    backdrop-filter: var(--glass-blur);
+    -webkit-backdrop-filter: var(--glass-blur);
+    border: var(--glass-border-thin);
+    border-radius: 14px;
+    box-shadow: 0 20px 50px rgba(0,0,0,0.6);
+    z-index: 81;
+    display: flex;
+    flex-direction: column;
+    padding: 16px;
+    box-sizing: border-box;
+    gap: 10px;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.28s var(--ease-elastic), transform 0.28s var(--ease-elastic);
+  }
+  .historyModal.open {
+    opacity: 1;
+    pointer-events: auto;
+    transform: translate(-50%, -50%) scale(1);
+  }
+  .historyModalHeader {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .historyModalHeader h2 {
+    font-size: 14px;
+    color: var(--accent-light);
+    margin: 0;
+  }
+  .historyMeta { font-size: 10px; color: #7d6789; }
+  .historyModal textarea {
+    flex: 1;
+    min-height: 220px;
+    width: 100%;
+    padding: 10px;
+    border-radius: 10px;
+    border: none;
+    outline: none;
+    background: #180f1c;
+    color: #cbb8d4;
+    font-size: 11px;
+    font-family: 'Courier New', monospace;
+    resize: vertical;
+    box-sizing: border-box;
+    white-space: pre;
+  }
+  .historyModalActions { display: flex; gap: 8px; }
+  .historyModalActions .iconBtn { flex: 1; text-align: center; }
+
+  @media (prefers-reduced-motion: reduce) {
+    .mote, .tomato, .msg, .typing span, .wing { animation: none !important; }
+    .settingsDrawer, .drawerBackdrop { transition: none !important; }
+    .historyModal, .historyBackdrop { transition: none !important; }
+    body.bothMode::before, .charTab.active, .dualPortraitRow,
+    #bothHeader.visible, #singleHeader.visible { animation: none !important; }
+    body, body.bothMode { transition: none !important; animation: none !important; background-position: 0% 0%, 100% 0%, 0% 0% !important; }
+  }
+
+  /* =====================================================================
+     ✨ VISUAL POLISH PASS — purely additive/overriding cosmetic layer.
+     Nothing below changes structure, class names, or JS hooks; it only
+     makes existing elements look richer: softer depth, glassy surfaces,
+     springier motion, subtle glow. Kept as one block for easy removal.
+  ===================================================================== */
+  /* PERF: font loading moved to a preloaded <link> in <head> (see below) -
+     an @import inside a <style> block is render-blocking, meaning the
+     browser has to fetch and parse it before painting anything at all.
+     The preload version fetches in parallel and swaps in once ready. */
+  :root {
+    --ease-spring: cubic-bezier(.34,1.56,.64,1);
+    --ease-smooth: cubic-bezier(.22,.61,.36,1);
+    --ease-elastic: cubic-bezier(0.175, 0.885, 0.32, 1.275);
+    --glass-border: rgba(255,255,255,0.14);
+    /* ---- Cyber-glass overhaul tokens ----
+       One shared spec for every drawer/header/modal surface, and one
+       shared elastic curve for interactive motion, so the "premium glass
+       + bouncy" feel reads as one consistent material instead of a pile
+       of one-off tweaks per component. */
+    --glass-bg: rgba(27, 20, 32, 0.65);
+    --glass-bg-strong: rgba(20, 15, 24, 0.78);
+    --glass-blur: blur(20px) saturate(160%);
+    --glass-border-thin: 1px solid rgba(255,255,255,0.08);
+    --press-scale: 0.96;
+  }
+
+  /* ===== Cyber-glass overhaul pass — layered on top of the polish pass
+     above; nothing here changes structure or JS hooks, only look/feel. ==== */
+
+  /* ---- Animated mesh background: slow-drifting glow blobs tinted by
+     the live mood accent, sitting behind the flat top/bottom gradient
+     that already crossfades on mood change. Only background-position
+     animates (compositor-friendly), so this costs nothing extra even on
+     a long idle session. Mood shifts still crossfade smoothly underneath
+     since --bg-top/--bg-bottom/--accent-rgb stay typed @properties. */
+  body {
+    background:
+      radial-gradient(ellipse 55% 45% at 22% 20%, rgba(var(--accent-rgb),0.24), transparent 62%),
+      radial-gradient(ellipse 50% 40% at 78% 24%, rgba(var(--accent-rgb),0.14), transparent 58%),
+      radial-gradient(circle at top, var(--bg-top), var(--bg-bottom));
+    /* PERF: this used to run `animation: meshDrift 24s infinite alternate`,
+       animating background-position on 3 gradient layers forever - unlike
+       transform, background-position is NOT compositor-only, so this was
+       a real full repaint every animation frame, nonstop, whether the app
+       was idle or not. The drift was subtle enough it isn't missed;
+       cutting it removes a permanent repaint cost for a look that's
+       basically identical at rest. */
+    transition: --bg-top var(--theme-speed) ease, --bg-bottom var(--theme-speed) ease,
+      --accent-rgb var(--theme-speed) ease;
+  }
+  /* Roundboth's split gets its own two-tone mesh - Bina's accent drifting
+     on the left blob, Rone's on the right - layered over the existing
+     split gradient rather than replacing it. */
+  body.bothMode {
+    background:
+      radial-gradient(ellipse 55% 45% at 22% 18%, rgba(var(--accent-rgb),0.28), transparent 60%),
+      radial-gradient(ellipse 55% 45% at 78% 18%, rgba(var(--accent-rgb-r),0.28), transparent 60%),
+      linear-gradient(90deg, var(--bg-top) 0%, var(--bg-bottom) 32%, var(--bg-bottom-r) 68%, var(--bg-top-r) 100%);
+    /* PERF: see body { } above - same fix, same reason. Roundboth runs
+       two live gradients (one per character) plus everything else, so
+       this repaint cost mattered even more here. */
+  }
+
+  body { font-family: 'Nunito', 'Segoe UI', sans-serif; }
+
+  /* --- ambient background: layered aurora blobs behind the app ---
+     PERF: blur(30px) is one of the heaviest filters in the browser's
+     toolbox - the old build let it sit on a *fixed, animating* element
+     with no layer promotion, so it was being fully re-blurred every
+     frame the whole 22s drift ran. will-change:transform tells the
+     browser to rasterize the blur once and then just slide/scale that
+     bitmap on the compositor, which is what makes a smooth 120Hz/144Hz
+     drift possible instead of a choppy, GPU-bound crawl. Blur radius is
+     also trimmed slightly (30px -> 24px) since it's imperceptible at
+     this size but meaningfully cheaper. */
+  body::before {
+    content: "";
+    position: fixed;
+    inset: -10%;
+    z-index: 0;
+    pointer-events: none;
+    background:
+      radial-gradient(ellipse 40% 30% at 20% 15%, rgba(var(--accent-rgb),0.20), transparent 65%),
+      radial-gradient(ellipse 45% 35% at 85% 80%, rgba(255,180,120,0.14), transparent 65%),
+      radial-gradient(ellipse 35% 30% at 75% 10%, rgba(140,120,255,0.14), transparent 65%);
+    filter: blur(24px) saturate(1.2);
+    animation: auroraDrift 22s ease-in-out infinite alternate;
+    transition: background var(--theme-speed) ease;
+    will-change: transform;
+    contain: strict;
+  }
+  @keyframes auroraDrift {
+    0%   { transform: translate3d(0,0,0) scale(1); }
+    50%  { transform: translate3d(-2%,2%,0) scale(1.06); }
+    100% { transform: translate3d(2%,-1%,0) scale(1.02); }
+  }
+
+  .mote { box-shadow: 0 0 18px 2px rgba(var(--accent-rgb),0.35); }
+
+  /* --- header --- */
+  h1 {
+    font-family: 'Quicksand', sans-serif;
+    font-weight: 700;
+    letter-spacing: 0.4px;
+    text-shadow: 0 1px 12px rgba(var(--accent-rgb),0.45), 0 1px 0 rgba(0,0,0,0.25);
+  }
+  .sub { letter-spacing: 0.3px; }
+  .lore { opacity: 0.85; }
+
+  .moodBadge {
+    backdrop-filter: blur(6px);
+    box-shadow: 0 2px 10px rgba(0,0,0,0.25), inset 0 1px 0 rgba(255,255,255,0.08), 0 0 14px -3px rgba(var(--accent-rgb),0.5);
+    transition: transform .3s var(--ease-elastic), box-shadow var(--theme-speed) ease, background var(--theme-speed) ease;
+  }
+  .moodBadge:hover { transform: translateY(-1px) scale(1.03); }
+
+  /* --- portrait: gentle idle float + richer glow --- */
+  .portrait { animation: portraitFloat 4.5s ease-in-out infinite; }
+  @keyframes portraitFloat {
+    0%, 100% { transform: translateY(0); }
+    50% { transform: translateY(-4px); }
+  }
+  /* PERF: collapsed from two stacked drop-shadow() passes down to one -
+     two blurred drop-shadows on a filter that re-runs every animation
+     frame (the idle float below) was costing a full extra GPU blur pass
+     per frame for barely any visible difference. */
+  .portrait.awake {
+    filter: drop-shadow(0 8px 24px rgba(var(--accent-rgb),0.55));
+    transition: filter var(--theme-speed) ease;
+  }
+  .portrait.affection-high:not(.deceased) {
+    filter: drop-shadow(0 8px 28px rgba(var(--accent-rgb),0.65)) saturate(1.2);
+    transition: filter var(--theme-speed) ease;
+  }
+  .portrait.deceased { animation: none; }
+
+  /* --- status bars: sheen sweep on the fill --- */
+  .statusBar .track {
+    box-shadow: inset 0 2px 4px rgba(0,0,0,0.35), 0 1px 0 rgba(255,255,255,0.05);
+  }
+  .statusBar .fill::after {
+    content: "";
+    position: absolute; inset: 0;
+    background: linear-gradient(180deg, rgba(255,255,255,0.35), transparent 60%);
+    mix-blend-mode: overlay;
+  }
+
+  /* --- chat bubbles: soft depth + glassy tint + springier pop --- */
+  .chat { scrollbar-gutter: stable; }
+  .chat::-webkit-scrollbar-thumb {
+    background: linear-gradient(180deg, var(--accent), #5a3f5f);
+    border-radius: 6px;
+  }
+  /* PERF: backdrop-filter used to be set on EVERY .msg bubble. That's cheap
+     with 3 messages and genuinely bad with 300 - each bubble was an
+     independent live backdrop blur the browser had to keep recomputing as
+     the chat scrolled. The glassy look is kept via a gradient + inset
+     highlight instead (see .bot/.user below), which is compositor-cheap
+     regardless of how long the conversation gets. content-visibility lets
+     the browser skip layout/paint entirely for bubbles currently scrolled
+     out of view - the single biggest win for a long-running chat log. */
+  .msg {
+    animation: slideFadeUp .42s var(--ease-elastic) both;
+    box-shadow: 0 3px 10px rgba(0,0,0,0.22);
+    transition: transform .35s var(--ease-elastic), box-shadow .3s var(--ease-elastic), background var(--theme-speed) ease;
+    content-visibility: auto;
+    contain-intrinsic-size: auto 72px;
+  }
+  /* Staggered entry: when several bubbles land close together (e.g. a
+     Roundboth back-and-forth), each one added slightly after the last
+     picks up a small extra delay based on its position at insertion time,
+     so they cascade in rather than popping simultaneously. A lone
+     incoming reply is always :nth-last-of-type(1) and plays immediately. */
+  .msg:nth-last-of-type(2) { animation-delay: .05s; }
+  .msg:nth-last-of-type(3) { animation-delay: .1s; }
+  .msg:nth-last-of-type(n+4) { animation-delay: .15s; }
+  .msg:hover { transform: translateY(-2px) scale(1.01); box-shadow: 0 8px 20px rgba(0,0,0,0.3); }
+  .msg:active { transform: scale(var(--press-scale)); filter: brightness(1.1); }
+  @keyframes slideFadeUp {
+    0%   { opacity: 0; transform: translateY(18px) scale(.94); }
+    60%  { opacity: 1; transform: translateY(-2px) scale(1.015); }
+    100% { transform: translateY(0) scale(1); }
+  }
+  @keyframes popIn {
+    0%   { opacity: 0; transform: scale(.9) translateY(10px); }
+    60%  { opacity: 1; transform: scale(1.02) translateY(-1px); }
+    100% { transform: scale(1) translateY(0); }
+  }
+  .bot { background: linear-gradient(160deg, var(--bot-bubble), rgba(0,0,0,0.12)); border: 1px solid rgba(255,255,255,0.05); }
+  .user {
+    background: linear-gradient(160deg, var(--accent-light), var(--accent));
+    box-shadow: 0 3px 14px rgba(var(--accent-rgb),0.35), 0 0 20px -4px rgba(var(--accent-rgb),0.55);
+  }
+
+  /* ---- Emotion-reactive bubbles ----
+     Each bubble gets a thin colored edge + soft glow that matches the
+     emotion it carried when it arrived (see botMoodBucket/
+     classifyUserEmotion in the script). Only box-shadow + border-color
+     are touched here - both are compositor/paint-cheap and, critically,
+     this glow is a one-shot animation on arrival (emotionGlow, ~1.1s) NOT
+     an infinite one, so a long chat history sitting idle costs nothing
+     extra once the bubbles have settled. */
+  .msg[data-emotion]:not([data-emotion="neutral"]) { animation: popIn .32s var(--ease-spring), emotionGlow 1.1s ease-out; }
+  @keyframes emotionGlow {
+    0%   { box-shadow: 0 0 0 0 rgba(var(--emotion-rgb, 255,255,255), 0.55), 0 3px 10px rgba(0,0,0,0.22); }
+    100% { box-shadow: 0 0 0 10px rgba(var(--emotion-rgb, 255,255,255), 0), 0 3px 10px rgba(0,0,0,0.22); }
+  }
+  .msg[data-emotion="happy"]    { --emotion-color: #ffd166; --emotion-rgb: 255,209,102; }
+  .msg[data-emotion="excited"]  { --emotion-color: #ffb347; --emotion-rgb: 255,179,71; }
+  .msg[data-emotion="loving"]   { --emotion-color: #ff6fa8; --emotion-rgb: 255,111,168; }
+  .msg[data-emotion="sad"]      { --emotion-color: #7ba7c9; --emotion-rgb: 123,167,201; }
+  .msg[data-emotion="crying"]   { --emotion-color: #7ba7c9; --emotion-rgb: 123,167,201; }
+  .msg[data-emotion="angry"]    { --emotion-color: #e05656; --emotion-rgb: 224,86,86; }
+  .msg[data-emotion="evil"]     { --emotion-color: #9a6fd9; --emotion-rgb: 154,111,217; }
+  .msg[data-emotion="confused"] { --emotion-color: #b0a8c0; --emotion-rgb: 176,168,192; }
+  /* bot bubbles sit on the left edge of the chat, so their accent goes on
+     the bubble's own left side; user bubbles sit on the right, so theirs
+     goes on the right - keeps the glow facing outward on both sides. */
+  .msg.bot[data-emotion]:not([data-emotion="neutral"])  { border-left: 3px solid var(--emotion-color); }
+  .msg.user[data-emotion]:not([data-emotion="neutral"]) { border-right: 3px solid var(--emotion-color); }
+  .typing {
+    box-shadow: 0 3px 10px rgba(0,0,0,0.22);
+    backdrop-filter: blur(2px);
+  }
+
+  /* --- buttons everywhere: lift + glow on hover, satisfying press --- */
+  .inputBar button, .keyRow button {
+    box-shadow: 0 3px 10px rgba(var(--accent-rgb),0.35);
+    transition: transform .3s var(--ease-elastic), box-shadow .25s ease, filter .2s ease, background var(--theme-speed) ease;
+  }
+  .inputBar button:hover, .keyRow button:hover { filter: brightness(1.08); transform: translateY(-1px); box-shadow: 0 5px 16px rgba(var(--accent-rgb),0.5); }
+  .inputBar button:active, .keyRow button:active { transform: translateY(0) scale(var(--press-scale)); filter: brightness(1.1); }
+
+  .inputBar textarea, .setup select, .setup .keyRow input {
+    transition: box-shadow .25s ease, background var(--theme-speed) ease;
+    box-shadow: inset 0 1px 3px rgba(0,0,0,0.35);
+  }
+  .inputBar textarea:focus, .keyRow input:focus { box-shadow: inset 0 1px 3px rgba(0,0,0,0.35), 0 0 0 2px rgba(var(--accent-rgb),0.45); }
+
+  .tomato { filter: drop-shadow(0 0 6px rgba(255,140,90,0.6)); }
+
+  .drawerBackdrop, .historyBackdrop { backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); }
+
+  .drawerSection .iconBtn {
+    box-shadow: inset 0 1px 0 rgba(255,255,255,0.05), 0 1px 4px rgba(0,0,0,0.25);
+    transition: transform .15s var(--ease-elastic), background var(--theme-speed) ease, box-shadow .2s ease;
+  }
+  .drawerSection .iconBtn:hover { transform: translateX(2px); box-shadow: 0 2px 8px rgba(0,0,0,0.3); }
+  .drawerSection .iconBtn:active { transform: scale(var(--press-scale)); filter: brightness(1.1); }
+
+  /* --- food tray polish --- */
+  .foodItem {
+    transition: transform .3s var(--ease-elastic), box-shadow .25s ease;
+  }
+  .foodItem:hover { transform: translateY(-3px) scale(1.05); box-shadow: 0 6px 14px rgba(0,0,0,0.35); }
+  .foodItem:active { transform: scale(var(--press-scale)); filter: brightness(1.1); }
+  .foodItem.dragging { filter: drop-shadow(0 6px 14px rgba(0,0,0,0.5)); }
+
+  /* --- setup panel --- */
+  .setup {
+    background: linear-gradient(165deg, #241a29, #1c1420);
+    box-shadow: 0 6px 18px rgba(0,0,0,0.3), inset 0 1px 0 rgba(255,255,255,0.04);
+  }
