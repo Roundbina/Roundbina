@@ -21,6 +21,9 @@
 <div class="motes" id="motes"></div>
 
 <div class="app">
+  <div class="cornerControlsLeft" id="cornerControlsLeft">
+    <button class="cornerBtn" id="menuToggleBtn" onclick="toggleMenuDrawer()" title="Menu" aria-label="Menu">☰<span class="cornerBtnBadge" id="streakBadge" style="display:none;"></span></button>
+  </div>
   <div class="cornerControls" id="cornerControls">
     <button class="cornerBtn" id="showerBtn" onclick="showerRoundbina()" title="Shower" aria-label="Shower">🚿</button>
     <button class="cornerBtn" id="killBtn" onclick="openKillFlow()" title="Kill (testing)" aria-label="Kill Roundbina (testing feature)">💀</button>
@@ -121,6 +124,35 @@
   </div>
 
 
+  <div class="drawerBackdrop" id="menuDrawerBackdrop" onclick="toggleMenuDrawer(false)"></div>
+  <div class="menuDrawer" id="menuDrawer">
+    <div class="drawerHeader">
+      <h2>Menu</h2>
+      <button class="drawerCloseBtn" onclick="toggleMenuDrawer(false)" aria-label="Close menu">✕</button>
+    </div>
+    <div class="menuList">
+      <button type="button" class="menuListItem" onclick="toggleStreakModal(true)">
+        <span class="menuItemIcon">🔥</span>
+        <span>Streak</span>
+        <span class="menuItemBadge" id="menuStreakBadge"></span>
+      </button>
+    </div>
+  </div>
+
+  <div class="historyBackdrop" id="streakBackdrop" onclick="toggleStreakModal(false)"></div>
+  <div class="historyModal" id="streakModal">
+    <div class="historyModalHeader">
+      <h2>🔥 Streak</h2>
+      <button class="drawerCloseBtn" onclick="toggleStreakModal(false)" aria-label="Close streak">✕</button>
+    </div>
+    <div class="streakDisplay">
+      <div class="streakCountBig" id="streakCountBig">🔥 0</div>
+      <div class="streakSubtext" id="streakSubtext">day streak</div>
+    </div>
+    <div class="streakFreezeRow" id="streakFreezeRow"></div>
+    <div class="historyMeta">Visit at least once a day to keep your streak going. Every 7 days in a row earns a freeze (🧊, up to 2 saved) - a freeze automatically covers one missed day so a single busy day doesn't wipe everything out.</div>
+  </div>
+
   <div class="drawerBackdrop" id="drawerBackdrop" onclick="toggleSettingsDrawer(false)"></div>
   <div class="settingsDrawer" id="settingsDrawer">
     <div class="drawerHeader">
@@ -133,6 +165,18 @@
     </div>
     <div class="drawerSection">
       <button class="iconBtn" id="viewHistoryBtn" onclick="toggleHistoryModal(true)">📜 view stored chat history</button>
+    </div>
+    <div class="drawerSection">
+      <button class="iconBtn" id="viewScenariosBtn" onclick="toggleScenariosModal(true)">🎭 scenarios</button>
+    </div>
+    <div class="drawerSection">
+      <label>💾 backup &amp; restore</label>
+      <div class="historyMeta">Everything here (chat, stats, affection) lives only in this browser. Back it up so switching phones or clearing your cache doesn't lose her.</div>
+      <div class="backupRestoreRow">
+        <button class="iconBtn" onclick="exportSaveData()">⬇️ backup save file</button>
+        <button class="iconBtn" onclick="triggerImportSaveData()">⬆️ restore from file</button>
+      </div>
+      <input type="file" id="importFileInput" accept="application/json" style="display:none;" onchange="importSaveData(this)">
     </div>
     <div class="drawerSection">
       <label>🎨 theme</label>
@@ -187,6 +231,8 @@
     </div>
   </div>
 
+  <div class="errorToastStack" id="errorToastStack" aria-live="polite"></div>
+
   <div class="historyBackdrop" id="reviveBackdrop" onclick="toggleReviveModal(false)"></div>
   <div class="historyModal" id="reviveModal">
     <div class="historyModalHeader">
@@ -210,6 +256,26 @@
     <textarea id="killTextarea" rows="4" placeholder="State a cause..." style="min-height:90px; font-family:inherit; font-size:13px; white-space:pre-wrap;"></textarea>
     <div class="historyModalActions">
       <button class="iconBtn" id="confirmKillBtn" onclick="confirmKill()">💀 present cause</button>
+    </div>
+  </div>
+
+  <div class="historyBackdrop" id="scenariosBackdrop" onclick="toggleScenariosModal(false)"></div>
+  <div class="historyModal" id="scenariosModal">
+    <div class="historyModalHeader">
+      <h2>🎭 Scenarios</h2>
+      <button class="drawerCloseBtn" onclick="toggleScenariosModal(false)" aria-label="Close scenarios">✕</button>
+    </div>
+    <div class="historyMeta">Save little scenario prompts, then drop whichever one you're in the mood for into the current chat - Roundbina, Roundrone, or both at once.</div>
+    <div id="scenariosList"></div>
+    <div class="scenarioAddForm">
+      <div class="scenarioAddRow">
+        <input type="text" id="scenarioEmojiInput" maxlength="4" placeholder="🎭" class="scenarioEmojiField">
+        <textarea id="scenarioTextInput" rows="2" placeholder="Describe the scenario..." class="scenarioTextField"></textarea>
+      </div>
+      <div class="historyModalActions">
+        <button class="iconBtn" id="generateScenarioBtn" onclick="generateScenarioIdea()">✨ generate with AI</button>
+        <button class="iconBtn" onclick="addScenario()">➕ add scenario</button>
+      </div>
     </div>
   </div>
 

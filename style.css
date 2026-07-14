@@ -681,7 +681,25 @@
     display: flex;
     gap: 8px;
   }
+  .cornerControlsLeft {
+    position: absolute;
+    top: calc(env(safe-area-inset-top) + 10px);
+    left: 10px;
+    z-index: 55;
+    display: flex;
+    gap: 8px;
+  }
+  .cornerBtnBadge {
+    position: absolute; top: -4px; right: -4px;
+    min-width: 16px; height: 16px; padding: 0 3px;
+    border-radius: 999px;
+    background: linear-gradient(180deg, #ff9d3d, #ff6a00);
+    color: #fff; font-size: 10px; font-weight: 700;
+    display: flex; align-items: center; justify-content: center;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.4);
+  }
   .cornerBtn {
+    position: relative;
     width: 34px; height: 34px; border-radius: 50%;
     background: rgba(var(--bg-top-rgb),0.55);
     border: 1px solid rgba(255,255,255,0.15);
@@ -740,6 +758,40 @@
     overflow: hidden;
   }
   .settingsDrawer.open { transform: translateX(0); }
+
+  .menuDrawer {
+    position: fixed;
+    top: 0; left: 0;
+    height: 100%;
+    height: 100dvh;
+    width: min(78vw, 300px);
+    background: var(--glass-bg);
+    backdrop-filter: var(--glass-blur);
+    -webkit-backdrop-filter: var(--glass-blur);
+    border-right: var(--glass-border-thin);
+    box-shadow: 10px 0 32px rgba(0,0,0,0.55);
+    z-index: 71;
+    transform: translateX(-100%);
+    transition: transform 0.36s var(--ease-elastic);
+    display: flex;
+    flex-direction: column;
+    box-sizing: border-box;
+    overflow: hidden;
+  }
+  .menuDrawer.open { transform: translateX(0); }
+  .menuList { padding: 8px; overflow-y: auto; flex: 1; }
+  .menuListItem {
+    width: 100%; display: flex; align-items: center; gap: 10px;
+    background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.06);
+    color: var(--text); font-size: 14px; font-weight: 600;
+    padding: 12px 14px; border-radius: 12px; margin-bottom: 8px;
+    cursor: pointer; text-align: left;
+  }
+  .menuListItem:hover { background: rgba(255,255,255,0.08); }
+  .menuListItem .menuItemIcon { font-size: 18px; }
+  .menuListItem .menuItemBadge {
+    margin-left: auto; font-size: 12px; font-weight: 700; color: var(--accent-light);
+  }
 
   .drawerHeader {
     display: flex;
@@ -865,6 +917,49 @@
     box-sizing: border-box;
   }
 
+  /* ---- App-level error toasts (replaces errors pasted into chat) ----
+     Failed requests (bad key/proxy, dropped connection, empty/filtered
+     reply) show up here instead of as a fake in-character message, so
+     it's always obvious an error is Moma's app talking, not her. */
+  .errorToastStack {
+    position: fixed;
+    left: 0; right: 0;
+    bottom: calc(env(safe-area-inset-bottom) + 78px);
+    z-index: 200;
+    display: flex; flex-direction: column; align-items: center; gap: 8px;
+    padding: 0 16px;
+    pointer-events: none;
+  }
+  .errorToast {
+    pointer-events: auto;
+    max-width: 420px; width: 100%;
+    background: linear-gradient(180deg, #3a1f24, #2a1418);
+    border: 1px solid rgba(255,120,120,0.35);
+    color: #ffd9d9;
+    font-size: 13px; line-height: 1.4;
+    border-radius: 14px;
+    padding: 10px 12px;
+    box-shadow: 0 6px 20px rgba(0,0,0,0.4);
+    display: flex; align-items: flex-start; gap: 8px;
+    animation: toastIn .25s var(--ease-elastic) both;
+  }
+  .errorToast.closing { animation: toastOut .2s ease both; }
+  .errorToast.infoToast {
+    background: linear-gradient(180deg, #2a2440, #1c1830);
+    border-color: rgba(255,200,120,0.4);
+    color: #ffe9c2;
+  }
+  .errorToast.infoToast .closeBtn { color: #ffe9c2; }
+  @keyframes toastIn { from { opacity: 0; transform: translateY(10px) scale(0.96); } to { opacity: 1; transform: translateY(0) scale(1); } }
+  @keyframes toastOut { to { opacity: 0; transform: translateY(6px) scale(0.96); } }
+  .errorToast .icon { flex-shrink: 0; font-size: 15px; line-height: 1.3; }
+  .errorToast .msg { flex: 1; word-break: break-word; }
+  .errorToast .closeBtn {
+    flex-shrink: 0; background: none; border: none; color: #ffd9d9;
+    opacity: 0.65; cursor: pointer; font-size: 14px; line-height: 1; padding: 2px;
+  }
+  .errorToast .closeBtn:hover { opacity: 1; }
+
   /* ---- Chat history data viewer (accessed from Settings) ---- */
   .historyBackdrop {
     position: fixed; inset: 0;
@@ -932,6 +1027,40 @@
   }
   .historyModalActions { display: flex; gap: 8px; }
   .historyModalActions .iconBtn { flex: 1; text-align: center; }
+
+  /* ---- Backup / restore (Settings) ---- */
+  .backupRestoreRow { display: flex; gap: 8px; margin-top: 6px; }
+  .backupRestoreRow .iconBtn { flex: 1; text-align: center; }
+
+  /* ---- Scenarios modal ---- */
+  /* ---- Streak modal ---- */
+  .streakDisplay { text-align: center; padding: 14px 0 6px; }
+  .streakCountBig { font-size: 40px; font-weight: 800; color: #ffb84d; text-shadow: 0 2px 10px rgba(255,140,0,0.35); }
+  .streakSubtext { font-size: 13px; color: var(--muted); margin-top: 2px; }
+  .streakFreezeRow { display: flex; justify-content: center; gap: 10px; margin: 10px 0 16px; font-size: 24px; }
+  .streakFreezeRow .freezeSlot { opacity: 0.3; }
+  .streakFreezeRow .freezeSlot.filled { opacity: 1; }
+
+  #scenariosList { display: flex; flex-direction: column; gap: 8px; margin: 10px 0; max-height: 40vh; overflow-y: auto; }
+  .scenarioRow {
+    display: flex; align-items: center; gap: 10px;
+    background: rgba(0,0,0,0.18); border-radius: 12px; padding: 10px 12px;
+  }
+  .scenarioInfo { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; }
+  .scenarioEmoji { font-size: 20px; flex-shrink: 0; }
+  .scenarioText { font-size: 13px; line-height: 1.35; word-break: break-word; }
+  .scenarioActions { display: flex; gap: 6px; flex-shrink: 0; }
+  .scenarioActions .iconBtn { font-size: 12px; padding: 6px 10px; white-space: nowrap; }
+  .scenarioAddForm { border-top: var(--glass-border-thin); padding-top: 12px; margin-top: 4px; }
+  .scenarioAddRow { display: flex; gap: 8px; margin-bottom: 8px; }
+  .scenarioEmojiField {
+    width: 52px; flex-shrink: 0; text-align: center; font-size: 18px;
+    border-radius: 10px; border: none; background: #3a2b40; color: #fff; padding: 8px 4px;
+  }
+  .scenarioTextField {
+    flex: 1; min-width: 0; resize: none; border-radius: 10px; border: none;
+    background: #3a2b40; color: #fff; padding: 8px 10px; font: inherit; font-size: 13px;
+  }
 
   @media (prefers-reduced-motion: reduce) {
     .mote, .tomato, .msg, .typing span, .wing { animation: none !important; }
@@ -1101,15 +1230,17 @@
      independent live backdrop blur the browser had to keep recomputing as
      the chat scrolled. The glassy look is kept via a gradient + inset
      highlight instead (see .bot/.user below), which is compositor-cheap
-     regardless of how long the conversation gets. content-visibility lets
-     the browser skip layout/paint entirely for bubbles currently scrolled
-     out of view - the single biggest win for a long-running chat log. */
+     regardless of how long the conversation gets.
+     This used to also carry content-visibility: auto with a fixed 72px
+     height guess, to skip layout/paint for offscreen bubbles - but real
+     replies here run far taller than that guess, so the very first time
+     you scrolled a never-before-rendered bubble into view, the browser
+     corrected its height and the scroll position lurched under you. Not
+     worth that jank for a chat log that isn't thousands of messages long. */
   .msg {
     animation: slideFadeUp .42s var(--ease-elastic) both;
     box-shadow: 0 3px 10px rgba(0,0,0,0.22);
     transition: transform .35s var(--ease-elastic), box-shadow .3s var(--ease-elastic), background var(--theme-speed) ease;
-    content-visibility: auto;
-    contain-intrinsic-size: auto 72px;
   }
   /* Staggered entry: when several bubbles land close together (e.g. a
      Roundboth back-and-forth), each one added slightly after the last
