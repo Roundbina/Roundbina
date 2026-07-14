@@ -218,6 +218,11 @@
       <input id="proxyUrlInput" type="text" placeholder="https://openrouter.ai/api/v1/chat/completions" autocomplete="off" />
     </div>
     <div class="drawerSection">
+      <label for="relayUrlInput">🛰️ relay URL (optional)</label>
+      <input id="relayUrlInput" type="text" placeholder="https://your-relay.workers.dev" autocomplete="off" />
+      <div class="historyMeta">Only needed if your provider blocks direct browser requests (a "Failed to fetch" that isn't your key/network's fault - Cerebras doesn't need this, some others do). Leave blank otherwise.</div>
+    </div>
+    <div class="drawerSection">
       <label for="modelNameInput">🧠 model name</label>
       <input id="modelNameInput" type="text" placeholder="e.g. openai/gpt-4o-mini" autocomplete="off" />
     </div>
