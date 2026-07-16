@@ -552,6 +552,64 @@
      bubble body itself (outside a control button) triggers a rewind-to-here. */
   .msg { cursor: pointer; position: relative; }
   .msg.system-msg { cursor: default; }
+
+  /* ---- Cross-character interruptions ---- */
+  .msg.guest {
+    cursor: default;
+    align-self: center;
+    max-width: 88%;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    background: linear-gradient(135deg, rgba(255,180,220,0.16), rgba(255,140,190,0.08));
+    border: 1px dashed rgba(255,160,210,0.45);
+    animation: guestBargeIn .5s var(--ease-elastic) both;
+  }
+  .guestText { flex: 1; text-align: left; font-style: italic; }
+  .guestAvatar {
+    width: 42px; height: 42px; border-radius: 50%; flex-shrink: 0;
+    object-fit: cover; background: rgba(0,0,0,0.2);
+    border: 2px solid rgba(255,160,210,0.6);
+    box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+    animation: guestTrotIn .5s var(--ease-elastic) both;
+  }
+  .guestAvatar.guestTrotAway { animation: guestTrotOut .55s ease-in both; }
+  @keyframes guestTrotIn {
+    0% { transform: translateX(-36px) scale(0.5); opacity: 0; }
+    100% { transform: translateX(0) scale(1); opacity: 1; }
+  }
+  @keyframes guestTrotOut {
+    0% { transform: translateX(0) scale(1); opacity: 1; }
+    100% { transform: translateX(36px) scale(0.4); opacity: 0; }
+  }
+  @keyframes guestBargeIn {
+    0% { opacity: 0; transform: translateY(-8px) scale(0.92); }
+    100% { opacity: 1; transform: translateY(0) scale(1); }
+  }
+
+  /* One of the small set of pre-built safe effects a character can choose
+     via the hidden {{EFFECT name}} tag - see EFFECT_INSTRUCTION/triggerEffect.
+     Deliberately just CSS animations/toggles, nothing that touches actual
+     app logic or code. */
+  body.spookyFlash::after {
+    content: "";
+    position: fixed; inset: 0; z-index: 150; pointer-events: none;
+    background: radial-gradient(circle at center, transparent 35%, rgba(60,0,20,0.55) 100%);
+    animation: spookyPulse 1.4s ease-out both;
+  }
+  @keyframes spookyPulse {
+    0% { opacity: 0; }
+    20% { opacity: 1; }
+    100% { opacity: 0; }
+  }
+  .shakeEffect { animation: shakeEffect .5s ease-in-out; }
+  @keyframes shakeEffect {
+    0%, 100% { transform: translateX(0); }
+    20% { transform: translateX(-6px) rotate(-2deg); }
+    40% { transform: translateX(5px) rotate(2deg); }
+    60% { transform: translateX(-4px) rotate(-1deg); }
+    80% { transform: translateX(3px) rotate(1deg); }
+  }
   .msgControls {
     display: flex; gap: 4px; margin-top: 4px;
     opacity: 0.55; transition: opacity .15s ease;
