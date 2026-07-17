@@ -1,6 +1,6 @@
-// Roundbina service worker - caches the app shell so it opens instantly
-// and still works offline once it's been loaded (and installed) once.
-const CACHE_NAME = "roundbina-cache-v1";
+// Roundbina service worker - caches the app shell so it still works
+// offline, while always preferring the freshest version when online.
+const CACHE_NAME = "roundbina-cache-v2"; // bumped - forces one clean cache reset
 const APP_SHELL = [
   "./index.html",
   "./style.css",
@@ -27,19 +27,24 @@ self.addEventListener("activate", (event) => {
   self.clients.claim();
 });
 
-// Cache-first for the app shell, falling back to network - and updating
-// the cache in the background when the network copy is newer.
+// Network-first for the app shell: always try to fetch the latest version
+// first, and only fall back to the cached copy if the network genuinely
+// fails (actually offline). This is the opposite of the old strategy
+// (cache-first), which is exactly why "I uploaded new files but nothing
+// changed" kept happening - cache-first ALWAYS served the old saved
+// version immediately, every single load, and only refreshed the cache
+// quietly in the background for next time. Since this file's own bytes
+// never changed between updates, the browser had no reason to even notice
+// a new service worker existed, so that stale cache never got busted on
+// its own.
 self.addEventListener("fetch", (event) => {
   if (event.request.method !== "GET") return;
   event.respondWith(
-    caches.match(event.request).then((cached) => {
-      const fetchPromise = fetch(event.request)
-        .then((networkResponse) => {
-          caches.open(CACHE_NAME).then((cache) => cache.put(event.request, networkResponse.clone()));
-          return networkResponse;
-        })
-        .catch(() => cached);
-      return cached || fetchPromise;
-    })
+    fetch(event.request)
+      .then((networkResponse) => {
+        caches.open(CACHE_NAME).then((cache) => cache.put(event.request, networkResponse.clone()));
+        return networkResponse;
+      })
+      .catch(() => caches.match(event.request))
   );
 });
