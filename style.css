@@ -223,21 +223,32 @@
     0% { transform: translateY(-50%) translateX(0) scale(1); opacity: 1; }
     100% { transform: translateY(-50%) translateX(140px) scale(0.5); opacity: 0; }
   }
+  /* BUG FIX: the infinite float animation and the mood-driven drop-shadow
+     filter used to live on the SAME element. That's fine most of the time
+     (a promoted layer just gets moved by the GPU each frame, cheap) - but
+     the moment the filter itself changes (a mood/expression swap), that
+     layer needs its content actually re-rasterized, WHILE the transform
+     animation is still running. Some mobile browsers get stuck doing that
+     expensive re-rasterization on every single animation frame afterward
+     instead of just once, until something else forces a fresh layout -
+     which matched exactly: a lag spike right on a mood/background change
+     that never recovered afterward, and dropping to full framerate the
+     moment the portrait scrolled offscreen (proving it was genuinely still
+     being repainted continuously, not just recalculated once per message).
+     Splitting them onto two separate elements means the always-animating
+     part never has its own rasterized content change, and the
+     occasionally-changing filter lives on an element with no animation of
+     its own to get stuck mid-frame. */
+  .portraitFloatWrap {
+    animation: portraitFloat 4.5s ease-in-out infinite;
+    will-change: transform;
+  }
   .portrait {
     position: relative;
     width: 112px;
     height: 105px;
     filter: drop-shadow(0 6px 14px rgba(0,0,0,0.4));
     transition: filter .3s ease;
-    /* PERF: drop-shadow is one of the most expensive CSS filters to
-       re-rasterize - the old build stacked TWO drop-shadows on top of an
-       infinite floating transform animation, forcing a full re-blur of the
-       portrait every single frame. Promoting it to its own compositor
-       layer means the (static) shadow is rasterized once, then just moved
-       by the GPU each frame like a sprite - this alone removes most of the
-       per-frame cost of the idle float. */
-    will-change: transform;
-    transform: translateZ(0);
   }
   .portrait.deceased {
     filter: grayscale(1) brightness(0.55) drop-shadow(0 4px 10px rgba(0,0,0,0.5));
@@ -1253,7 +1264,14 @@
   .moodBadge:hover { transform: translateY(-1px) scale(1.03); }
 
   /* --- portrait: gentle idle float + richer glow --- */
-  .portrait { animation: portraitFloat 4.5s ease-in-out infinite; }
+  /* PERF BUG FIX: this used to also carry its own
+     "animation: portraitFloat 4.5s ease-in-out infinite" - but .portrait
+     is nested directly inside .portraitFloatWrap, which already applies
+     that exact same animation. Both were running at once, forever,
+     compounding the float motion and doubling the ongoing compositing
+     cost for something that never stops - this is what was making the
+     header/portrait area specifically (not the chat) get progressively
+     more expensive to keep on screen. The wrapper alone is enough. */
   @keyframes portraitFloat {
     0%, 100% { transform: translateY(0); }
     50% { transform: translateY(-4px); }
