@@ -379,10 +379,20 @@
   }
   .statusBar .fill {
     width: 100%;
+    height: 100%;
     border-radius: 5px;
     position: relative;
     overflow: hidden;
-    transition: height .6s var(--ease-elastic), background-color .6s ease, box-shadow var(--theme-speed) ease;
+    transform-origin: bottom;
+    /* PERF: this used to animate "height" directly, which is a layout-
+       triggering property - every single hunger/clean/affection change
+       (after every message, feed, effect) forced the browser to
+       recompute layout AND repaint on every frame of that 0.6s animation,
+       for all three bars at once, concentrated right in the header.
+       transform: scaleY() achieves the exact same growing/shrinking fill
+       look but is compositor-only (GPU can just scale the existing
+       layer), no layout or repaint needed. */
+    transition: transform .6s var(--ease-elastic), background-color .6s ease, box-shadow var(--theme-speed) ease;
     box-shadow: 0 0 8px 1px rgba(255,255,255,0.15);
   }
   .statusBar.hunger .fill { background: linear-gradient(180deg, #ffb37a, #ff7a59); }
@@ -441,7 +451,7 @@
     justify-content: flex-end;
     overflow: hidden;
   }
-  .miniFill { width: 100%; border-radius: 4px; transition: height .6s ease; }
+  .miniFill { width: 100%; height: 100%; border-radius: 4px; transform-origin: bottom; transition: transform .6s ease; }
   .miniBar.hunger .miniFill { background: linear-gradient(180deg, #ffb37a, #ff7a59); }
   .miniBar.affection .miniFill { background: linear-gradient(180deg, #ff9ec7, #ff4f8b); }
   .miniBar.clean .miniFill { background: linear-gradient(180deg, #8fd3ff, #4aa8e0); }
