@@ -344,18 +344,6 @@
     transition: background .2s ease, color .2s ease, transform .15s var(--ease-spring, cubic-bezier(.34,1.56,.64,1)),
       border-color .2s ease, box-shadow var(--theme-speed) ease;
   }
-  /* The Roundboth tab itself is half-and-half when active, a little
-     preview of the split room it opens into. */
-  .charTab[data-character="both"].active {
-    background: linear-gradient(90deg, var(--accent) 0%, var(--accent) 45%, var(--accent-r) 55%, var(--accent-r) 100%);
-    box-shadow: 0 2px 10px rgba(var(--accent-rgb),0.3), 0 2px 10px rgba(var(--accent-rgb-r),0.3);
-    background-size: 200% 100%;
-    animation: bothTabShimmer 3.5s ease-in-out infinite;
-  }
-  @keyframes bothTabShimmer {
-    0%, 100% { background-position: 0% 0; }
-    50% { background-position: 15% 0; }
-  }
   .charTab.disabled { opacity: 0.4; cursor: default; }
   .charTab.disabled:hover { transform: none; }
   .statusBars {
@@ -876,6 +864,21 @@
   .menuListItem .menuItemIcon { font-size: 18px; }
   .menuListItem .menuItemBadge {
     margin-left: auto; font-size: 12px; font-weight: 700; color: var(--accent-light);
+  }
+  /* Roundgroup is half-and-half while it's the active mode, a little
+     preview of the split room it opens into - same shimmer the old
+     Roundboth tab used to have back when it lived in the charSwitcher. */
+  .menuListItem.active {
+    background: linear-gradient(90deg, var(--accent) 0%, var(--accent) 45%, var(--accent-r) 55%, var(--accent-r) 100%);
+    border-color: transparent;
+    color: #fff;
+    box-shadow: 0 2px 10px rgba(var(--accent-rgb),0.3), 0 2px 10px rgba(var(--accent-rgb-r),0.3);
+    background-size: 200% 100%;
+    animation: bothTabShimmer 3.5s ease-in-out infinite;
+  }
+  @keyframes bothTabShimmer {
+    0%, 100% { background-position: 0% 0; }
+    50% { background-position: 15% 0; }
   }
 
   .drawerHeader {
