@@ -331,6 +331,50 @@ let needsKillInstructionThisTurn = false;
 // actually check it against the current conversation.
 const MOOD_REMINDER = "\n\n[System note: actively re-evaluate and update your mood to genuinely match how THIS specific conversation has been going so far - don't let it go stale or default to whatever you said last turn.]";
 
+// ---- Per-character mood overrides -----------------------------------------
+// The shared STATUS_INSTRUCTION/MOOD_REMINDER above are enough for a
+// character whose personality already wears her feelings openly (Bina).
+// Characters whose personality is built around NOT visibly reacting (Rone's
+// denial, Ecchino's composure) give weaker models an easy excuse to just let
+// the hidden {{STATUS ... mood=...}} field go stale too - "she's calm, so
+// mood=calm forever" - even though the mood tag is meant to be her honest
+// INTERNAL state, not a transcript of what she lets show on the surface.
+// Each entry here is an extra, character-specific instruction stacked on
+// top of the shared ones, spelling out explicitly that outward control is
+// not the same thing as an unchanging inner state. Empty string = no extra
+// instruction needed. Keyed by character id so adding a future roundie who
+// needs the same treatment is just adding her own entry here.
+const MOOD_OVERRIDES = {
+  bina: "",
+  rone: `
+
+---
+STRICT MOOD RULE FOR RONE: your tsundere DENIAL is dialogue, not data. You
+might insist "I'm not blushing" or "I don't care" in your spoken lines while
+your hidden mood field still honestly reports "shy" or "fond" underneath -
+the two are allowed to (and usually should) disagree. Never let the mood
+field just default to a guarded/neutral word because your dialogue stayed
+prickly on the surface; it must keep tracking your REAL reaction turn to
+turn, even when your words are busy denying it.`,
+  ecchino: `
+
+---
+STRICT MOOD RULE FOR ECCHINO: your composure is a performance, not a
+description of your hidden mood field. Because you rarely raise your voice
+or change expression, it is easy to lazily report the same neutral word
+("calm", "composed", "content") every single turn regardless of what's
+actually happening in the conversation - this is WRONG and you must not do
+it. The hidden mood field tracks your genuine internal state, which keeps
+moving even while your outward behavior stays controlled: kindness can move
+it toward something like content, fond, or quietly pleased; disrespect or
+cruelty toward someone you protect can move it toward cold, displeased, or
+even a controlled fury; being ignored can move it toward distant or guarded;
+being genuinely touched can move it toward a rare warmth. Let your DIALOGUE
+stay composed and understated as always, but the mood word underneath it
+must keep honestly shifting with events - never let it go two turns in a row
+without re-checking whether it's actually still true.`
+};
+
 // Format every reply like this worked example (a real name, not the
 // literal placeholder) - avoids reinforcing the earlier bug where a model
 // output "{{Character name}}" literally as text.
@@ -357,7 +401,8 @@ function getSystemPrompt() {
   const tier = getAffectionTier(characterStatus.affection);
   const tierNote = `\n\n---\nYour current relationship tier with them is "${tier.label}" (affection ${characterStatus.affection}/100). ${tier.note} Let this genuinely color how you speak to them - don't announce the tier itself, just let it shape your tone.`;
   const killPart = needsKillInstructionThisTurn ? KILL_INSTRUCTION : "";
-  return base + tierNote + killPart + STATUS_INSTRUCTION + MOOD_REMINDER + FORMAT_INSTRUCTION + EFFECT_INSTRUCTION;
+  const moodOverride = MOOD_OVERRIDES[getCharacter().id] || "";
+  return base + tierNote + killPart + STATUS_INSTRUCTION + moodOverride + MOOD_REMINDER + FORMAT_INSTRUCTION + EFFECT_INSTRUCTION;
 }
 
 // ---- AI-narrated status bars (hunger / cleanliness / affection) ----------
@@ -1294,7 +1339,7 @@ actions, or hidden status tag for her - only your own. Feel free to address
 ${other.name} by name and react to what she just said, since she's right there
 with you. Keep each reply short (1-3 sentences) - this is a fast, natural
 back-and-forth, not a monologue.`;
-  const sysPrompt = basePrompt + groupNote + STATUS_INSTRUCTION + MOOD_REMINDER + FORMAT_INSTRUCTION;
+  const sysPrompt = basePrompt + groupNote + STATUS_INSTRUCTION + (MOOD_OVERRIDES[charId] || "") + MOOD_REMINDER + FORMAT_INSTRUCTION;
 
   const messages = [{ role: "system", content: sysPrompt }];
   const recent = bothTranscript.slice(-24);
@@ -1407,14 +1452,34 @@ function triggerEffect(name, targetCharId) {
 // not scripted - this is what actually tests its creative judgment rather
 // than the app dictating the outcome.
 const INTERRUPT_THRESHOLD = 10;
-const INTERRUPT_COUNTER_KEY = { bina: "roundbina_msgsSinceBinaActive", rone: "roundbina_msgsSinceRoneActive" };
 
-// Called after each successful solo-mode exchange. Resets the counter for
-// whichever character you're actually talking to, and ticks up the OTHER
-// one's "how long have I been ignored" counter - crossing the threshold
-// fires her interruption.
+// ---- The "N selector" ------------------------------------------------------
+// Everything below used to hardcode a single fixed bina<->rone pair (e.g.
+// `activeId === "bina" ? "rone" : "bina"`), which silently left any third+
+// character (Ecchino included) completely out of the cross-character
+// awareness system - she'd never barge in, and would never learn the other
+// two switched away from her. otherCharacterIds() is the one place that
+// answers "who are this character's siblings", read from the CHARACTERS
+// registry itself - so a future 4th, 5th, etc. roundie is automatically
+// wired into every feature below the moment she's added to CHARACTERS,
+// with zero further edits needed here.
+function otherCharacterIds(id) {
+  return Object.keys(CHARACTERS).filter((cid) => cid !== id);
+}
+
+// Per-character key for "how many messages has it been since I was last the
+// active character" - generated from the id instead of a fixed lookup table,
+// so it covers any character automatically. Matches the exact legacy key
+// names for bina/rone so nobody's existing saved counters reset.
+function interruptCounterKey(id) {
+  const cap = id.charAt(0).toUpperCase() + id.slice(1);
+  return `roundbina_msgsSince${cap}Active`;
+}
+
 // Manual version of the same interruption, triggered from the Streak
-// modal's button instead of the automatic 10-message counter.
+// modal's button instead of the automatic 10-message counter. With more
+// than one sibling available, each gets an equal, random shot at it - e.g.
+// Rone & Ecchino each get a 50% chance when you're texting Bina.
 function manualTriggerInterruption() {
   if (isBothMode()) {
     showErrorToast("They're already together in Roundgroup - no one to barge in from.");
@@ -1424,24 +1489,40 @@ function manualTriggerInterruption() {
     showErrorToast("Connect an API key first so she can actually show up.");
     return;
   }
-  const otherId = activeCharacterId === "bina" ? "rone" : "bina";
+  const candidates = otherCharacterIds(activeCharacterId);
+  if (!candidates.length) return;
+  const otherId = candidates[Math.floor(Math.random() * candidates.length)];
   toggleStreakModal(false);
-  localStorage.setItem(INTERRUPT_COUNTER_KEY[otherId], "0");
+  localStorage.setItem(interruptCounterKey(otherId), "0");
   triggerCharacterInterruption(otherId, activeCharacterId);
 }
 
+// Called after each successful solo-mode exchange. Resets the counter for
+// whichever character you're actually talking to, and ticks up EVERY OTHER
+// sibling's "how long have I been ignored" counter. Any sibling who's now
+// crossed the threshold is ELIGIBLE to barge in this turn - with more than
+// one eligible at once (e.g. both Rone and Ecchino have been neglected
+// equally long while you talk to Bina), we deliberately don't always let
+// whoever's been waiting longest win, since that's predictable and always
+// favors the same one. Instead every eligible sibling gets an equal,
+// random shot at it each turn - the "loser" keeps her crossed-threshold
+// counter and just gets another equal shot next turn instead of resetting.
 function bumpInterruptCounters(activeId) {
-  if (isBothMode() || (activeId !== "bina" && activeId !== "rone")) return;
-  const otherId = activeId === "bina" ? "rone" : "bina";
+  if (isBothMode() || !CHARACTERS[activeId]) return;
+  localStorage.setItem(interruptCounterKey(activeId), "0");
 
-  localStorage.setItem(INTERRUPT_COUNTER_KEY[activeId], "0");
-  const otherCount = (parseInt(localStorage.getItem(INTERRUPT_COUNTER_KEY[otherId]), 10) || 0) + 1;
+  const eligible = [];
+  otherCharacterIds(activeId).forEach((otherId) => {
+    const key = interruptCounterKey(otherId);
+    const count = (parseInt(localStorage.getItem(key), 10) || 0) + 1;
+    localStorage.setItem(key, String(count));
+    if (count >= INTERRUPT_THRESHOLD) eligible.push(otherId);
+  });
 
-  if (otherCount >= INTERRUPT_THRESHOLD) {
-    localStorage.setItem(INTERRUPT_COUNTER_KEY[otherId], "0");
-    triggerCharacterInterruption(otherId, activeId);
-  } else {
-    localStorage.setItem(INTERRUPT_COUNTER_KEY[otherId], String(otherCount));
+  if (eligible.length) {
+    const intruderId = eligible[Math.floor(Math.random() * eligible.length)];
+    localStorage.setItem(interruptCounterKey(intruderId), "0");
+    triggerCharacterInterruption(intruderId, activeId);
   }
 }
 
@@ -1465,8 +1546,9 @@ petty/jealous/a little cutting, to hurt and quiet, to sweetly affectionate
 with a gift, entirely your own call. Keep it short (1-3 sentences), and don't
 write ${activeChar.name}'s reaction for her - only your own entrance.`;
 
+  const moodOverride = MOOD_OVERRIDES[intruderId] || "";
   const messages = [
-    { role: "system", content: basePrompt + interruptNote + STATUS_INSTRUCTION + MOOD_REMINDER + FORMAT_INSTRUCTION + EFFECT_INSTRUCTION },
+    { role: "system", content: basePrompt + interruptNote + STATUS_INSTRUCTION + moodOverride + MOOD_REMINDER + FORMAT_INSTRUCTION + EFFECT_INSTRUCTION },
     { role: "user", content: `[Barge in on ${activeChar.name}'s conversation now.]` }
   ];
 
@@ -3428,22 +3510,38 @@ function consumePendingReturnGreeting(id) {
   }
 }
 
-function otherCharacterId(id) {
-  return id === "bina" ? "rone" : "bina";
+// Among every OTHER character (using the shared otherCharacterIds() N
+// selector - see its definition near bumpInterruptCounters above), finds
+// whichever sibling the person was most recently talking to. This is what
+// lets the awareness note below scale to any number of roundies: with just
+// Bina and Rone there's only ever one candidate, but adding Ecchino (or a
+// future 4th, 5th...) just means picking whichever of them is freshest,
+// with zero changes needed here.
+function mostRecentlyActiveOtherCharacter(id) {
+  let bestId = null;
+  let bestTs = -Infinity;
+  otherCharacterIds(id).forEach((cid) => {
+    const raw = localStorage.getItem(bothStatusKey(cid, "lastMessageAt"));
+    if (!raw) return;
+    const ts = parseInt(raw, 10);
+    if (ts > bestTs) { bestTs = ts; bestId = cid; }
+  });
+  return bestId ? { id: bestId, lastMessageAt: bestTs } : null;
 }
 
-// Lets a character react to what the person was up to with their sibling
-// while *this* character was the one left alone - checks whether the
-// other character was actually talked to at some point during this
-// character's own absence (using each character's independently-tracked
-// lastMessageAt timestamp), not just whenever the other last spoke ever.
+// Lets a character react to what the person was up to with a sibling while
+// *this* character was the one left alone - checks whether any other
+// character was actually talked to at some point during this character's
+// own absence (using each character's independently-tracked lastMessageAt
+// timestamp), not just whenever that sibling last spoke ever. If the
+// person visited more than one sibling, only the most recent one is named,
+// same as the original two-character behavior.
 function buildOtherCharacterAwarenessNote(gapMs) {
-  const otherId = otherCharacterId(activeCharacterId);
-  const otherChar = CHARACTERS[otherId];
-  const otherLastMsgRaw = localStorage.getItem(bothStatusKey(otherId, "lastMessageAt"));
-  if (!otherLastMsgRaw) return null;
-  const otherGapMs = Date.now() - parseInt(otherLastMsgRaw, 10);
-  if (otherGapMs >= gapMs) return null; // other character wasn't visited during this absence either
+  const other = mostRecentlyActiveOtherCharacter(activeCharacterId);
+  if (!other) return null;
+  const otherChar = CHARACTERS[other.id];
+  const otherGapMs = Date.now() - other.lastMessageAt;
+  if (otherGapMs >= gapMs) return null; // no sibling was visited during this absence either
   return `[While you were alone, the user was talking with ${otherChar.name} as recently as ` +
     `${formatElapsed(otherGapMs)} ago. You may bring this up if it feels natural for your ` +
     `personality - curious, teasing, jealous, unbothered, whatever genuinely fits - or ignore ` +
@@ -4131,22 +4229,22 @@ function initFoodTray() {
       <button type="button" class="foodTrayClose" aria-label="Close food tray">×</button>
     </div>
     <div class="foodTrayGrid">
-    <div class="foodItem" data-food="Dango" data-emoji="🍡"><img data-src="assets/img14.png" alt="Dango skewer" draggable="false"></div>
-    <div class="foodItem" data-food="Mochi Ring" data-emoji="🍡"><img data-src="assets/img15.png" alt="Mochi ring" draggable="false"></div>
-    <div class="foodItem" data-food="Ramen" data-emoji="🍜"><img data-src="assets/img16.png" alt="Bowl of ramen" draggable="false"></div>
-    <div class="foodItem" data-food="Blueberry Tart" data-emoji="🥧"><img data-src="assets/img17.png" alt="Blueberry tart" draggable="false"></div>
-    <div class="foodItem" data-food="Compass Tea Cake" data-emoji="🍰" title="Compass Tea Cake"><img data-src="assets/img18.png" alt="Compass tea cake" draggable="false"></div>
-    <div class="foodItem" data-food="Golden Roc Roll" data-emoji="🥐" title="Golden Roc Roll"><img data-src="assets/img19.png" alt="Golden roc bread roll" draggable="false"></div>
-    <div class="foodItem" data-food="Berry Sandwich Cake" data-emoji="🍰" title="Berry Sandwich Cake"><img data-src="assets/img20.png" alt="Berry sandwich cake slice" draggable="false"></div>
-    <div class="foodItem" data-food="Nocturne Cake" data-emoji="🍫" title="Nocturne Cake"><img data-src="assets/img21.png" alt="Chocolate nocturne cake" draggable="false"></div>
-    <div class="foodItem" data-food="Ox Banner Cake" data-emoji="🐂" title="Ox Banner Cake"><img data-src="assets/img22.png" alt="Ox banner cake" draggable="false"></div>
-    <div class="foodItem" data-food="Wingberry Trifle" data-emoji="🍨" title="Wingberry Trifle"><img data-src="assets/img23.png" alt="Wingberry trifle" draggable="false"></div>
-    <div class="foodItem" data-food="Quillroast Hen" data-emoji="🍗" title="Quillroast Hen"><img data-src="assets/img24.png" alt="Quill roast hen" draggable="false"></div>
-    <div class="foodItem" data-food="Dim Sum Basket" data-emoji="🥟" title="Dim Sum Basket"><img data-src="assets/img25.png" alt="Dim sum basket" draggable="false"></div>
-    <div class="foodItem" data-food="Crystal Peach Plate" data-emoji="🍑" title="Crystal Peach Plate"><img data-src="assets/img26.png" alt="Crystal peach plate" draggable="false"></div>
-    <div class="foodItem" data-food="Winged Pancake Stack" data-emoji="🥞" title="Winged Pancake Stack"><img data-src="assets/img27.png" alt="Winged pancake stack" draggable="false"></div>
-    <div class="foodItem" data-food="Filigree Tea Cake" data-emoji="🍰" title="Filigree Tea Cake"><img data-src="assets/img28.png" alt="Filigree tea cake" draggable="false"></div>
-    <div class="foodItem" data-food="Swan Bakery Basket" data-emoji="🥐" title="Swan Bakery Basket"><img data-src="assets/img29.png" alt="Swan bakery basket" draggable="false"></div>
+    <div class="foodItem" data-food="Dango" data-emoji="🍡"><img data-src="assets/food-dango.png" alt="Dango skewer" draggable="false"></div>
+    <div class="foodItem" data-food="Mochi Ring" data-emoji="🍡"><img data-src="assets/food-mochi-ring.png" alt="Mochi ring" draggable="false"></div>
+    <div class="foodItem" data-food="Ramen" data-emoji="🍜"><img data-src="assets/food-ramen.png" alt="Bowl of ramen" draggable="false"></div>
+    <div class="foodItem" data-food="Blueberry Tart" data-emoji="🥧"><img data-src="assets/food-blueberry-tart.png" alt="Blueberry tart" draggable="false"></div>
+    <div class="foodItem" data-food="Compass Tea Cake" data-emoji="🍰" title="Compass Tea Cake"><img data-src="assets/food-compass-tea-cake.png" alt="Compass tea cake" draggable="false"></div>
+    <div class="foodItem" data-food="Golden Roc Roll" data-emoji="🥐" title="Golden Roc Roll"><img data-src="assets/food-golden-roc-roll.png" alt="Golden roc bread roll" draggable="false"></div>
+    <div class="foodItem" data-food="Berry Sandwich Cake" data-emoji="🍰" title="Berry Sandwich Cake"><img data-src="assets/food-berry-sandwich-cake.png" alt="Berry sandwich cake slice" draggable="false"></div>
+    <div class="foodItem" data-food="Nocturne Cake" data-emoji="🍫" title="Nocturne Cake"><img data-src="assets/food-nocturne-cake.png" alt="Chocolate nocturne cake" draggable="false"></div>
+    <div class="foodItem" data-food="Ox Banner Cake" data-emoji="🐂" title="Ox Banner Cake"><img data-src="assets/food-ox-banner-cake.png" alt="Ox banner cake" draggable="false"></div>
+    <div class="foodItem" data-food="Wingberry Trifle" data-emoji="🍨" title="Wingberry Trifle"><img data-src="assets/food-wingberry-trifle.png" alt="Wingberry trifle" draggable="false"></div>
+    <div class="foodItem" data-food="Quillroast Hen" data-emoji="🍗" title="Quillroast Hen"><img data-src="assets/food-quillroast-hen.png" alt="Quill roast hen" draggable="false"></div>
+    <div class="foodItem" data-food="Dim Sum Basket" data-emoji="🥟" title="Dim Sum Basket"><img data-src="assets/food-dim-sum-basket.png" alt="Dim sum basket" draggable="false"></div>
+    <div class="foodItem" data-food="Crystal Peach Plate" data-emoji="🍑" title="Crystal Peach Plate"><img data-src="assets/food-crystal-peach-plate.png" alt="Crystal peach plate" draggable="false"></div>
+    <div class="foodItem" data-food="Winged Pancake Stack" data-emoji="🥞" title="Winged Pancake Stack"><img data-src="assets/food-winged-pancake-stack.png" alt="Winged pancake stack" draggable="false"></div>
+    <div class="foodItem" data-food="Filigree Tea Cake" data-emoji="🍰" title="Filigree Tea Cake"><img data-src="assets/food-filigree-tea-cake.png" alt="Filigree tea cake" draggable="false"></div>
+    <div class="foodItem" data-food="Swan Bakery Basket" data-emoji="🥐" title="Swan Bakery Basket"><img data-src="assets/food-swan-bakery-basket.png" alt="Swan bakery basket" draggable="false"></div>
     </div>
   `;
   const appEl = document.querySelector(".app");
