@@ -971,16 +971,16 @@ const CHARACTERS = {
     emoji: "🩸",
     placeholderInput: "Say something to Roundecchino...",
     // Same data-src trick as Rone's bank - see the comment above it in
-    // index.html. Only 5 poses exist so far: eyesClosed reuses the base
+    // index.html. Only 6 poses exist so far: eyesClosed reuses the base
     // pose (her eyes are a fixed stylized "X", nothing to blink), and
-    // evil/loving have no dedicated art yet and fall back the same way.
+    // loving has no dedicated art yet and falls back the same way.
     portraits: {
       eyesClosed: document.getElementById("ecchinoAssetBase").dataset.src,
       eyesOpen:   document.getElementById("ecchinoAssetBase").dataset.src,
       happy:      document.getElementById("ecchinoAssetHappy").dataset.src,
       crying:     document.getElementById("ecchinoAssetCrying").dataset.src,
       angry:      document.getElementById("ecchinoAssetAngry").dataset.src,
-      evil:       null,
+      evil:       document.getElementById("ecchinoAssetEvil").dataset.src,
       confused:   document.getElementById("ecchinoAssetConfused").dataset.src,
       loving:     null // no dedicated "loving" pose yet
     },
