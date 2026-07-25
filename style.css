@@ -991,6 +991,7 @@
   }
   .drawerSection input[type="text"],
   .drawerSection input[type="password"],
+  .drawerSection input[type="number"],
   .drawerSection textarea {
     width: 100%;
     padding: 8px 10px;
@@ -1431,4 +1432,140 @@
   .setup {
     background: linear-gradient(165deg, #241a29, #1c1420);
     box-shadow: 0 6px 18px rgba(0,0,0,0.3), inset 0 1px 0 rgba(255,255,255,0.04);
+  }
+
+  /* ---- Roundie Gallery modal ---- */
+  .galleryModal {
+    position: fixed; inset: 0; z-index: 90;
+    display: flex; align-items: center; justify-content: center;
+    background: rgba(10, 6, 12, 0.65);
+    padding: 20px;
+    box-sizing: border-box;
+  }
+  .galleryPanel {
+    width: min(94vw, 480px);
+    max-height: min(80vh, 640px);
+    background: var(--glass-bg);
+    backdrop-filter: var(--glass-blur);
+    -webkit-backdrop-filter: var(--glass-blur);
+    border: var(--glass-border-thin);
+    border-radius: 20px;
+    box-shadow: 0 20px 50px rgba(0,0,0,0.5);
+    display: flex; flex-direction: column;
+    overflow: hidden;
+  }
+  .galleryHeader {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 16px 18px 12px;
+    background: rgba(24,17,28,0.98);
+    box-shadow: 0 6px 10px -6px rgba(0,0,0,0.35);
+    flex-shrink: 0;
+  }
+  .galleryHeader h2 { margin: 0; font-size: 15px; color: var(--accent-light); }
+  .galleryClose {
+    background: transparent; border: none; color: var(--muted);
+    font-size: 20px; line-height: 1; cursor: pointer; padding: 4px 8px;
+  }
+  .galleryClose:hover { color: var(--accent-light); }
+  .galleryGrid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+    gap: 12px;
+    padding: 16px;
+    overflow-y: auto;
+  }
+  .galleryLoading {
+    grid-column: 1 / -1;
+    text-align: center;
+    color: var(--muted);
+    font-size: 13px;
+    padding: 30px 10px;
+  }
+  .galleryCard {
+    display: flex; flex-direction: column; align-items: center;
+    background: rgba(255,255,255,0.04);
+    border: 1px solid rgba(255,255,255,0.07);
+    border-radius: 14px;
+    padding: 12px 8px 10px;
+    cursor: pointer;
+    color: var(--text);
+    font-family: inherit;
+    transition: transform .15s var(--ease-elastic), background .2s ease;
+  }
+  .galleryCard:hover { background: rgba(255,255,255,0.08); transform: translateY(-2px); }
+  .galleryCard:active { transform: scale(var(--press-scale)); }
+  .galleryThumb {
+    width: 64px; height: 64px; border-radius: 50%;
+    background: rgba(0,0,0,0.25);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 28px; overflow: hidden; margin-bottom: 8px;
+  }
+  .galleryThumb img { width: 100%; height: 100%; object-fit: cover; }
+  .galleryName { font-family: 'Quicksand', sans-serif; font-weight: 700; font-size: 13px; text-align: center; }
+  .gallerySub { font-size: 10.5px; color: var(--muted); text-align: center; margin-top: 2px; line-height: 1.3; }
+
+  /* ---- extra stat bars (beyond hunger/cleanliness) ---- */
+  #extraStatsBars .extraStat { }
+
+  /* ---- In-app Roundie Builder (Workshop), lives inside #galleryModal ---- */
+  .builderView {
+    flex: 1;
+    overflow-y: auto;
+    padding-bottom: 20px;
+  }
+  .builderPaletteGrid {
+    display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-top: 8px;
+  }
+  .builderSwatch { display: flex; flex-direction: column; align-items: center; gap: 4px; }
+  .builderSwatch input[type="color"] { width: 100%; height: 34px; padding: 2px; border: none; border-radius: 8px; cursor: pointer; background: #3a2b40; }
+  .builderSwatch span { font-size: 9.5px; color: var(--muted); }
+
+  .builderStatRow, .builderSlot {
+    background: #241a29; border: 1px solid rgba(255,143,177,0.16); border-radius: 12px; padding: 10px;
+  }
+  .builderStatRow .bsr-header { display:flex; justify-content:space-between; align-items:center; margin-bottom:6px; }
+  .builderStatRow .bsr-header span { font-size: 10.5px; color: var(--muted); font-weight:700; text-transform:uppercase; letter-spacing:.04em; }
+  .builderStatRow .bsr-header button { background:none; border:none; color:var(--muted); font-size:15px; cursor:pointer; }
+  .builderStatRow .bsr-top { display:grid; grid-template-columns:44px 1fr; gap:8px; margin-bottom:8px; }
+  .builderStatRow input.bsr-icon { width:44px; text-align:center; background:#160f1a; border:1px solid rgba(255,143,177,0.16); border-radius:8px; color:#fff; font-size:16px; padding:6px 0; }
+  .builderStatRow input.bsr-label { background:#160f1a; border:1px solid rgba(255,143,177,0.16); border-radius:8px; color:#fff; font-size:12.5px; font-weight:700; padding:6px 8px; }
+  .builderStatRow .bsr-sub { display:grid; grid-template-columns:1fr 1fr; gap:6px; }
+  .builderStatRow input.bsr-detail { background:#160f1a; border:1px solid rgba(255,143,177,0.16); border-radius:8px; color:var(--muted); font-size:10.5px; padding:6px 8px; }
+
+  .builderSlotList { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; }
+  .builderSlot { display: grid; grid-template-columns: 44px 1fr auto auto; align-items: center; gap: 8px; }
+  .builderSlot .b-thumb {
+    width: 44px; height: 44px; border-radius: 10px; background: #160f1a;
+    background-size: cover; background-position: center;
+    border: 1px dashed rgba(255,143,177,0.16); display: flex; align-items: center; justify-content: center;
+    font-size: 16px; color: var(--muted); overflow: hidden;
+  }
+  .builderSlot .b-name-fixed { font-size: 12px; color: #fff; font-weight: 600; }
+  .builderSlot input.b-slot-name {
+    width: 100%; background: transparent; border: none; border-bottom: 1px solid rgba(255,143,177,0.16);
+    color: #fff; font-size: 12px; font-weight: 600; padding: 3px 2px;
+  }
+  .builderSlot .b-filebtn {
+    font-size: 10.5px; color: var(--accent-light); background: rgba(255,143,177,.12);
+    border: 1px solid rgba(255,143,177,.3); border-radius: 8px; padding: 6px 8px; cursor: pointer; white-space: nowrap;
+  }
+  .builderSlot .b-filebtn input { display: none; }
+  .builderSlot .b-removeBtn { background: none; border: none; color: var(--muted); font-size: 15px; cursor: pointer; padding: 2px 4px; }
+
+  .builderPreviewCard { text-align: center; padding: 10px 0; }
+  .builderPreviewPortrait {
+    width: 84px; height: 84px; margin: 0 auto 8px; border-radius: 50%;
+    background: #160f1a; background-size: cover; background-position: center;
+    display: flex; align-items: center; justify-content: center; font-size: 30px;
+    border: 2px solid rgba(255,143,177,0.16);
+  }
+  .builderPreviewName { font-family: 'Quicksand', sans-serif; font-weight: 700; font-size: 15px; color: var(--accent-light); }
+  .builderPreviewSub { font-size: 10.5px; color: var(--muted); margin-top: 2px; }
+
+  /* Gallery cards get an explicit "adopt" affordance, matching the app's
+     kids/companion framing rather than a plain generic tap target. */
+  .galleryAdoptBtn {
+    margin-top: 6px; font-size: 10px; font-weight: 700; color: #2a1f30;
+    background: linear-gradient(135deg, var(--accent), #e05e88);
+    border-radius: 999px; padding: 4px 10px; display: inline-block;
   }

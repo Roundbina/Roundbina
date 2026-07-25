@@ -27,6 +27,7 @@
   <div class="cornerControls" id="cornerControls">
     <button class="cornerBtn" id="showerBtn" onclick="showerRoundbina()" title="Shower" aria-label="Shower">🚿</button>
     <button class="cornerBtn" id="killBtn" onclick="openKillFlow()" title="Kill (testing)" aria-label="Kill Roundbina (testing feature)">💀</button>
+    <button class="cornerBtn" id="galleryToggleBtn" onclick="openRoundieGallery()" title="Roundie Gallery" aria-label="Roundie Gallery">🏠</button>
     <button class="cornerBtn" id="settingsToggleBtn" onclick="toggleSettingsDrawer()" title="Settings" aria-label="Settings">⚙️</button>
   </div>
   <header>
@@ -38,8 +39,8 @@
     <div id="singleHeader">
     <div class="portrait-row">
       <div class="statusBars">
-        <div class="statusBar hunger" title="Hunger">
-          <span class="icon">🍅</span>
+        <div class="statusBar hunger" id="hungerBar" title="Hunger">
+          <span class="icon" id="hungerIcon">🍅</span>
           <div class="track"><div class="fill" id="hungerFill" style="transform:scaleY(0.8)"></div></div>
         </div>
         <div class="statusBar affection" title="Affection">
@@ -90,11 +91,15 @@
       </div>
       </div>
       <div class="statusBars">
-        <div class="statusBar clean" title="Cleanliness">
-          <span class="icon">🫧</span>
+        <div class="statusBar clean" id="cleanBar" title="Cleanliness">
+          <span class="icon" id="cleanIcon">🫧</span>
           <div class="track"><div class="fill" id="cleanFill" style="transform:scaleY(1)"></div></div>
         </div>
       </div>
+      <!-- Populated by renderExtraStatBars() only when the active Roundie
+           defines stats.extra (bars beyond the built-in two) - hidden and
+           empty for Bina/Rone/Ecchino, who don't use this. -->
+      <div class="statusBars" id="extraStatsBars" style="display:none;"></div>
     </div>
     <div class="deceasedMarker" id="deceasedMarker" style="display:none;">🥀 unresponsive - needs to be revived</div>
     <div class="moodBadge" id="moodBadge" title="How she's feeling right now"><span id="moodEmoji">🙂</span> <span id="moodWord">happy</span></div>
@@ -268,6 +273,51 @@
       <textarea id="systemPromptInput" rows="6" placeholder="Describe how Roundbina should behave..."></textarea>
     </div>
     <div class="drawerSection">
+      <label style="display:flex; align-items:center; gap:8px; cursor:pointer;">
+        <input type="checkbox" id="fallbackEnabledCheckbox" style="width:auto;" />
+        🛟 use Google AI Studio as a fallback
+      </label>
+      <div class="historyMeta">If the main connection above fails outright (down, overloaded, rate-limited), the app quietly retries through Google's Gemini API instead of showing an error. Needs its own free API key from <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">aistudio.google.com</a> - separate from your main key above.</div>
+      <label for="googleApiKeyInput" style="margin-top:8px;">🔑 Google AI Studio API key</label>
+      <input id="googleApiKeyInput" type="password" placeholder="AIza..." autocomplete="off" />
+      <label for="googleModelInput" style="margin-top:8px;">🧠 Google model name</label>
+      <input id="googleModelInput" type="text" placeholder="gemma-4-31b-it" autocomplete="off" />
+    </div>
+    <div class="drawerSection">
+      <label for="temperatureInput">🎛️ advanced model settings</label>
+      <div class="historyMeta">Leave any of these blank to use the provider's own default - only filled-in fields get sent. A weaker/quirkier model (Mistral, etc.) drifting off-instruction or forgetting the STATUS tag is often a temperature-too-high problem, worth trying lower (0.4–0.6) before assuming the model just can't do it.</div>
+      <div class="settingsRow" style="gap:8px; margin-top:8px;">
+        <div style="flex:1;">
+          <label for="temperatureInput" style="font-size:0.75em;">temperature</label>
+          <input id="temperatureInput" type="number" step="0.05" min="0" max="2" placeholder="0.8" />
+        </div>
+        <div style="flex:1;">
+          <label for="topPInput" style="font-size:0.75em;">top_p</label>
+          <input id="topPInput" type="number" step="0.05" min="0" max="1" placeholder="default" />
+        </div>
+      </div>
+      <div class="settingsRow" style="gap:8px; margin-top:8px;">
+        <div style="flex:1;">
+          <label for="topKInput" style="font-size:0.75em;">top_k</label>
+          <input id="topKInput" type="number" step="1" min="0" placeholder="default" />
+        </div>
+        <div style="flex:1;">
+          <label for="freqPenaltyInput" style="font-size:0.75em;">frequency penalty</label>
+          <input id="freqPenaltyInput" type="number" step="0.1" min="-2" max="2" placeholder="0" />
+        </div>
+        <div style="flex:1;">
+          <label for="presPenaltyInput" style="font-size:0.75em;">presence penalty</label>
+          <input id="presPenaltyInput" type="number" step="0.1" min="-2" max="2" placeholder="0" />
+        </div>
+      </div>
+      <div class="historyMeta" style="margin-top:6px;">Note: top_k isn't part of the standard OpenAI schema - most OpenAI-compatible providers (Cerebras included) accept it, but a few silently ignore an unrecognized field rather than erroring, so if it seems to have no effect, that's likely why.</div>
+    </div>
+    <div class="drawerSection">
+      <label for="modelSteeringInput">🧭 extra model instructions</label>
+      <div class="historyMeta">Separate from the personality prompt above - these always get added on top instead of replacing anything, so you can steer a specific model's quirks ("always end with the STATUS tag", "keep replies short") without touching who Roundbina actually is.</div>
+      <textarea id="modelSteeringInput" rows="4" placeholder="e.g. Never forget the {{STATUS}} tag, even in a one-word reply."></textarea>
+    </div>
+    <div class="drawerSection">
       <button class="iconBtn" id="saveConnectionBtn" onclick="saveConnectionSettings()">💾 save proxy settings</button>
     </div>
     </div>
@@ -357,6 +407,104 @@
   <div class="inputBar" id="chatBar" style="display:none;">
     <textarea id="chatInput" placeholder="Say something to Roundbina..." autocomplete="off" rows="1"></textarea>
     <button id="chatSendBtn" onclick="handleChatSend()">Send</button>
+  </div>
+</div>
+
+<!-- Roundie Gallery: populated at runtime by openRoundieGallery() in
+     app.js from roundies/index.json + each Roundie's own JSON. Tapping
+     "Adopt" registers her into CHARACTERS and switches to her - see
+     openRoundieFromGallery(). Community Roundies live in roundies/<id>/.
+     The "+" button switches this same modal into the Workshop view below,
+     so building and browsing Roundies live in one place. -->
+<div class="galleryModal" id="galleryModal" style="display:none;">
+  <div class="galleryPanel">
+    <div class="galleryHeader">
+      <h2 id="galleryHeaderTitle">Roundie Gallery</h2>
+      <div style="display:flex; gap:4px; align-items:center;">
+        <button class="galleryClose" id="galleryPlusBtn" onclick="openRoundieBuilder()" aria-label="Build a new Roundie" title="Build a new Roundie">➕</button>
+        <button class="galleryClose" onclick="closeRoundieGallery()" aria-label="Close">✕</button>
+      </div>
+    </div>
+    <div class="galleryGrid" id="galleryGrid"></div>
+
+    <!-- ---- Workshop (in-app Roundie Builder) ----
+         Hidden until openRoundieBuilder() shows it. Lazy-loads JSZip only
+         at that point (see ensureJSZipLoaded()) so nobody pays for that
+         library just by opening the app or the gallery grid. -->
+    <div class="builderView" id="builderView" style="display:none;">
+      <button class="iconBtn" id="builderBackBtn" onclick="closeBuilderView()" style="margin:10px 14px 0;">← back to gallery</button>
+
+      <div class="drawerSection">
+        <label>Emoji + Name</label>
+        <div style="display:flex; gap:8px;">
+          <input type="text" id="b-emoji" maxlength="4" value="🌸" style="width:56px; text-align:center; flex:none;">
+          <input type="text" id="b-name" placeholder="Roundlins" maxlength="24" style="flex:1;">
+        </div>
+        <label style="margin-top:10px;">Pronouns</label>
+        <select id="b-pronoun" style="width:100%; padding:8px 10px; border-radius:10px; border:none; background:#3a2b40; color:#fff; font-size:12px;">
+          <option value="she/her">she/her</option>
+          <option value="he/him">he/him</option>
+          <option value="they/them">they/them</option>
+        </select>
+        <label style="margin-top:10px;">Subtitle</label>
+        <input type="text" id="b-subtitle" placeholder="an 8cm tall pocket companion" maxlength="60">
+        <label style="margin-top:10px;">Lore line</label>
+        <input type="text" id="b-lore" placeholder="their tiny chibi self — [source character]" maxlength="70">
+        <label style="margin-top:10px;">Chat input placeholder</label>
+        <input type="text" id="b-placeholder" placeholder="Say something to Roundlins...">
+      </div>
+
+      <div class="drawerSection">
+        <label>Personality / behavior prompt</label>
+        <textarea id="b-prompt" rows="6" placeholder="You are &quot;Roundlins&quot;, a tiny, round AI companion, only about 8 centimeters tall. [Pronoun] is ..."></textarea>
+        <label style="margin-top:10px;">First message</label>
+        <textarea id="b-intro" rows="3" placeholder="...oh! Hi. I'm Roundlins — set up the proxy in settings if you want to actually talk to me."></textarea>
+      </div>
+
+      <div class="drawerSection">
+        <label>Palette</label>
+        <div class="builderPaletteGrid">
+          <div class="builderSwatch"><input type="color" id="b-c-accent" value="#ff8fb1"><span>accent</span></div>
+          <div class="builderSwatch"><input type="color" id="b-c-accentLight" value="#ffd6e8"><span>accent light</span></div>
+          <div class="builderSwatch"><input type="color" id="b-c-muted" value="#b79bc4"><span>muted</span></div>
+          <div class="builderSwatch"><input type="color" id="b-c-bgTop" value="#3a2b3f"><span>bg top</span></div>
+          <div class="builderSwatch"><input type="color" id="b-c-bgBottom" value="#1b1420"><span>bg bottom</span></div>
+          <div class="builderSwatch"><input type="color" id="b-c-botBubble" value="#4a3453"><span>bot bubble</span></div>
+        </div>
+      </div>
+
+      <div class="drawerSection">
+        <label>Stat bars</label>
+        <div class="historyMeta">The two bars every Roundie tracks — don't have to mean hunger/cleanliness. A vampire could track "Blood" instead.</div>
+        <div class="builderStatRow" id="b-statBar1" style="margin-top:8px;"></div>
+        <div class="builderStatRow" id="b-statBar2" style="margin-top:10px;"></div>
+        <div id="b-extraStatList" style="margin-top:10px;"></div>
+        <button class="iconBtn" id="b-addStatBtn" type="button" style="margin-top:8px;">+ add an extra bar</button>
+      </div>
+
+      <div class="drawerSection">
+        <label>Adoption portrait <span style="font-weight:400;color:var(--muted)">— the picture shown on their gallery card</span></label>
+        <div class="builderSlot" id="b-coverSlot"></div>
+        <label style="margin-top:14px;">Expression portraits <span style="font-weight:400;color:var(--muted)">— skip any you don't have</span></label>
+        <div class="builderSlotList" id="b-slotList"></div>
+        <button class="iconBtn" id="b-addSlotBtn" type="button" style="margin-top:8px;">+ add custom slot</button>
+      </div>
+
+      <div class="drawerSection" id="b-previewSection">
+        <label>Preview</label>
+        <div class="builderPreviewCard">
+          <div class="builderPreviewPortrait" id="b-pv-portrait">🌸</div>
+          <div class="builderPreviewName" id="b-pv-name">Roundlins</div>
+          <div class="builderPreviewSub" id="b-pv-sub">an 8cm tall pocket companion</div>
+        </div>
+      </div>
+
+      <div class="drawerSection">
+        <button class="iconBtn" id="b-exportBtn" onclick="exportBuilderRoundie()" style="width:100%; text-align:center; font-size:14px;">💾 export &amp; download .zip</button>
+        <div class="historyMeta" style="margin-top:8px;">This downloads a zip with their JSON + art. Send that zip to Roundbina's creator to get them adopted into everyone's gallery — nothing here uploads anywhere on its own.</div>
+        <div class="historyMeta" id="b-statusMsg" style="margin-top:6px; color:var(--accent-light);"></div>
+      </div>
+    </div>
   </div>
 </div>
 

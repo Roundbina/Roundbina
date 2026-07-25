@@ -40,7 +40,32 @@ const LS_GLOBAL = {
   RELAY_URL:    "roundbina_relayUrl",    // optional CORS relay - see doModelFetch()
   MAX_TOKENS:   "roundbina_maxTokens",   // user-adjustable reply length cap
   MAX_CONTEXT:  "roundbina_maxContext",  // user-adjustable context window budget (tokens) sent to the model
-  API_KEY:      "roundbina_apiKey"       // optional: only written if the person opts in to "remember on this device"
+  API_KEY:      "roundbina_apiKey",      // optional: only written if the person opts in to "remember on this device"
+  // ---- Google AI Studio (Gemini API) fallback - see callGoogleFallback() ----
+  // Only ever used when the primary proxy call fails outright (network
+  // error or a non-2xx from the server) - a normal safety-filtered reply
+  // is a real answer, not a failure, so it does NOT trigger this.
+  FALLBACK_ENABLED: "roundbina_fallbackEnabled",
+  GOOGLE_API_KEY:   "roundbina_googleApiKey",
+  GOOGLE_MODEL:     "roundbina_googleModel", // e.g. "gemma-4-31b-it" or "gemma-4-26b-a4b-it"
+
+  // ---- Advanced sampling params - blank/unset means "don't send this
+  // field at all", so a person who never touches these gets identical
+  // behavior to before (temperature 0.8, nothing else specified). ----
+  TEMPERATURE:      "roundbina_temperature",
+  TOP_P:            "roundbina_topP",
+  TOP_K:            "roundbina_topK",
+  FREQ_PENALTY:     "roundbina_freqPenalty",
+  PRES_PENALTY:     "roundbina_presPenalty",
+
+  // Always appended AFTER the character's personality prompt (default or
+  // custom override) rather than replacing anything - see getSystemPrompt()
+  // and the "custom personality prompt" field, which DOES fully replace the
+  // character's personality. This one never overlaps with that - it's for
+  // steering notes aimed at a specific weaker/quirkier model ("always
+  // finish your STATUS tag", "keep replies under 3 sentences"), not for
+  // redefining who she is.
+  MODEL_STEERING:   "roundbina_modelSteering"
 };
 
 const LS_PER_CHARACTER_BASE = {
@@ -65,7 +90,15 @@ const LS_PER_CHARACTER_BASE = {
   STATUS_CLEAN:  "statusClean",  // 0 (filthy) .. 100 (spotless)
   STATUS_AFFECTION: "statusAffection", // 0 (hurt/withdrawn) .. 100 (adoring) - tracks how she's been treated
   STATUS_MOOD:   "statusMood",   // free-text mood word from the model
-  USER_THEME:    "userTheme"     // manual theme pick ("auto" or a THEME_PRESETS key), per character
+  USER_THEME:    "userTheme",    // manual theme pick ("auto" or a THEME_PRESETS key), per character
+
+  // Rolling conversation summary (see "Conversation summarization" section
+  // below): CONVO_SUMMARY holds the current ~100-token prose summary of
+  // everything older than the recent raw window, CONVO_SUMMARY_COVERS
+  // holds how many chatHistory entries (counted from index 0) it already
+  // accounts for, so we know exactly where the still-raw tail begins.
+  CONVO_SUMMARY:        "convoSummary",
+  CONVO_SUMMARY_COVERS: "convoSummaryCovers"
 };
 
 const LS = new Proxy({}, {
@@ -135,6 +168,122 @@ function trimHistoryToContextBudget(history) {
   return kept;
 }
 
+// ---- Conversation summarization -------------------------------------------
+// Sending the ENTIRE raw chatHistory back to the model forever has two
+// problems as a conversation grows: it eventually blows the context budget
+// (trimHistoryToContextBudget just silently drops the oldest turns once
+// that happens - total, not graceful, forgetting), and every one of her own
+// past {{STATUS ... mood=...}} tags sits there verbatim, which is exactly
+// what causes her to anchor on repeating the same mood word turn after
+// turn instead of genuinely re-evaluating it (see MOOD_REMINDER above).
+//
+// The fix: once there's a big enough uncondensed chunk sitting behind the
+// most recent turns, fold it into a short rolling prose summary (no tags,
+// no repeated literal mood words to latch onto) and send THAT instead of
+// the raw chunk - while always still sending the most recent turns
+// verbatim, so nothing about the live back-and-forth loses detail.
+const SUMMARY_TRIGGER_MESSAGES = 20; // fold in a fresh chunk once this many raw entries have piled up unsummarized
+const SUMMARY_KEEP_RECENT = 10;      // always keep this many of the newest raw entries word-for-word, never summarized
+const SUMMARY_TARGET_TOKENS = 100;   // rough target length for the rolling summary itself
+
+// Builds the actual "messages" array to send for the CURRENT character:
+// a short system note carrying the rolling summary (if one exists yet),
+// followed by the token-budget-trimmed tail of raw turns. Falls back to
+// the plain old behavior untouched if no summary has been generated yet
+// (e.g. early in a fresh conversation, or a model that's never
+// successfully summarized).
+function buildContextMessages() {
+  const coveredRaw = parseInt(localStorage.getItem(LS.CONVO_SUMMARY_COVERS), 10) || 0;
+  const summary = localStorage.getItem(LS.CONVO_SUMMARY) || "";
+  if (coveredRaw > 0 && coveredRaw <= chatHistory.length && summary) {
+    const recent = chatHistory.slice(coveredRaw);
+    return [
+      { role: "system", content: `[Summary of earlier conversation before this point: ${summary}]` },
+      ...trimHistoryToContextBudget(recent)
+    ];
+  }
+  return trimHistoryToContextBudget(chatHistory);
+}
+
+// Clamps the stored "how much has been summarized" counter down whenever
+// chatHistory itself gets shortened from underneath it (editing/deleting a
+// past bubble, regenerating from an earlier point, etc.) - otherwise the
+// counter could end up pointing past the end of the (now shorter) array,
+// which would make buildContextMessages() slice out an empty recent tail
+// and silently send nothing but a stale summary for context.
+function clampSummaryCoverage() {
+  const coveredRaw = parseInt(localStorage.getItem(LS.CONVO_SUMMARY_COVERS), 10) || 0;
+  if (coveredRaw > chatHistory.length) {
+    localStorage.setItem(LS.CONVO_SUMMARY_COVERS, String(chatHistory.length));
+  }
+}
+
+// Wipes the rolling summary entirely - used wherever chatHistory itself
+// gets cleared out to start fresh, so a leftover summary from a previous
+// conversation never bleeds into a brand new one.
+function clearConversationSummary() {
+  localStorage.removeItem(LS.CONVO_SUMMARY);
+  localStorage.removeItem(LS.CONVO_SUMMARY_COVERS);
+}
+
+// Fire-and-forget: called after a successful exchange to check whether
+// enough new raw history has piled up to fold into the rolling summary.
+// Deliberately NOT awaited by its caller - this runs in the background and
+// updates localStorage for the *next* send to pick up, so it never adds
+// latency to the reply the person is actually waiting on right now.
+let summaryUpdateInFlight = false;
+async function maybeUpdateConversationSummary() {
+  if (summaryUpdateInFlight) return;
+  const coveredRaw = parseInt(localStorage.getItem(LS.CONVO_SUMMARY_COVERS), 10) || 0;
+  if (coveredRaw > chatHistory.length) return; // stale/inconsistent - let clampSummaryCoverage sort it out first
+  const uncoveredCount = chatHistory.length - coveredRaw;
+  if (uncoveredCount < SUMMARY_TRIGGER_MESSAGES) return;
+
+  const newCoveredUpTo = chatHistory.length - SUMMARY_KEEP_RECENT;
+  if (newCoveredUpTo <= coveredRaw) return; // not enough of a fresh chunk to bother with yet
+
+  summaryUpdateInFlight = true;
+  try {
+    const char = getCharacter();
+    const priorSummary = localStorage.getItem(LS.CONVO_SUMMARY) || "";
+    const chunk = chatHistory.slice(coveredRaw, newCoveredUpTo);
+    const chunkText = chunk
+      .map((m) => {
+        if (m.role === "system") return null; // background notes (return greetings, interruption pings, etc.) - not part of the actual back-and-forth
+        const speaker = m.role === "assistant" ? char.name : "The person";
+        const clean = stripStrayTags(m.content); // drops any {{STATUS/EFFECT/KILL ...}} tags - the summary should describe what happened, not carry the literal tag text forward
+        return clean ? `${speaker}: ${clean}` : null;
+      })
+      .filter(Boolean)
+      .join("\n");
+    if (!chunkText) { // nothing worth summarizing in this chunk (e.g. all system notes) - just advance the marker past it
+      localStorage.setItem(LS.CONVO_SUMMARY_COVERS, String(newCoveredUpTo));
+      return;
+    }
+
+    const summarizerMessages = [
+      {
+        role: "system",
+        content: `You are condensing part of an ongoing roleplay conversation between a person and the character ${char.name} into a short factual memory note, to be handed back to ${char.name} later so she can remember what happened without re-reading the whole thing.
+Write about ${SUMMARY_TARGET_TOKENS} tokens (a few plain sentences), third person, factual - no dialogue quotes, no meta-commentary, no hidden tags of any kind. Capture what actually happened and how the relationship or her mood genuinely shifted over this stretch, not a blow-by-blow transcript.${priorSummary ? " Fold it into the EXISTING summary below into one updated summary - don't just append a second paragraph." : ""}${priorSummary ? `\n\nEXISTING SUMMARY SO FAR:\n${priorSummary}` : ""}`
+      },
+      { role: "user", content: `NEW STRETCH OF CONVERSATION TO FOLD IN:\n${chunkText}\n\nWrite the updated summary now, and nothing else.` }
+    ];
+
+    const result = await callCharacterCompletion(summarizerMessages, 220);
+    if (result.ok && result.raw && result.raw.trim()) {
+      localStorage.setItem(LS.CONVO_SUMMARY, stripStrayTags(stripThinkingTags(result.raw)).trim());
+      localStorage.setItem(LS.CONVO_SUMMARY_COVERS, String(newCoveredUpTo));
+    }
+    // On failure, just leave everything as-is - the next successful
+    // exchange will retry from the same uncovered starting point.
+  } catch (e) {
+    console.warn("Roundbina: conversation summary update failed", e);
+  } finally {
+    summaryUpdateInFlight = false;
+  }
+}
+
 // ---- 1. Configuration & Conversation Memory ----------------------------
 // The API key is only written to localStorage if the person checks
 // "remember on this device" in the setup panel (or later opts in via
@@ -150,6 +299,18 @@ let proxyUrl = localStorage.getItem(LS.PROXY_URL) || DEFAULT_PROXY_URL;
 // provider directly", which is the common case and needs no relay at all.
 let relayUrl = localStorage.getItem(LS.RELAY_URL) || "";
 let selectedModel = localStorage.getItem(LS.MODEL) || DEFAULT_MODEL_NAME;
+// ---- Google AI Studio (Gemini API) fallback ----
+let fallbackEnabled = localStorage.getItem(LS.FALLBACK_ENABLED) === "true";
+let googleApiKey = localStorage.getItem(LS.GOOGLE_API_KEY) || "";
+let googleModel = localStorage.getItem(LS.GOOGLE_MODEL) || "gemma-4-31b-it";
+// ---- Advanced sampling params (blank = provider default, field omitted
+// from the request entirely) ----
+let temperature = localStorage.getItem(LS.TEMPERATURE) || "0.8";
+let topP = localStorage.getItem(LS.TOP_P) || "";
+let topK = localStorage.getItem(LS.TOP_K) || "";
+let freqPenalty = localStorage.getItem(LS.FREQ_PENALTY) || "";
+let presPenalty = localStorage.getItem(LS.PRES_PENALTY) || "";
+let modelSteeringNotes = localStorage.getItem(LS.MODEL_STEERING) || "";
 let chatHistory = [];
 try {
   chatHistory = JSON.parse(localStorage.getItem(LS.API_HISTORY) || "[]");
@@ -215,44 +376,9 @@ Never break character or mention that you are an LLM.
 // to the person, so it never leaks into the chat. This is what lets feeding,
 // showering, or just chatting about being grubby/well-fed all naturally
 // move the hunger/cleanliness bars, instead of a fixed passive timer.
-const STATUS_INSTRUCTION = `
-
----
-You must track two hidden numbers and one mood word, and report them at the
-end of EVERY single reply without exception - even a short or one-word reply.
-
-- hunger: a number 0-100 (100 = completely full). Drifts down slowly on its
-  own as messages go by, drops faster if ignored a long time, and rises when
-  fed or given tomatoes.
-- cleanliness: a number 0-100 (100 = spotless). Drifts down slowly on its
-  own, drops faster after messy play, and rises when given a shower/bath.
-IMPORTANT: hunger and cleanliness must carry over from the number you
-reported last turn, only drifting a small, realistic amount - they are
-NEVER supposed to jump up or down because of mood, emotion, or how the
-conversation is going. Only real events (time passing, being fed, being
-washed) change them. An angry or sad reply does NOT mean hunger or
-cleanliness suddenly dropped - keep them stable and continuous regardless
-of emotional tone.
-- mood: ONE lowercase word for your current emotional state, e.g. happy,
-  content, playful, shy, sleepy, hopeful, worried, sad, hurt, lonely, grumpy,
-  indignant, angry, cold, scared, hysterical, dazed, adoring, gone. Let how
-  the person has been treating you shape this: warmth/compliments/
-  playfulness push it toward a fonder word; cruelty/cursing at you/coldness
-  push it toward a hurt or guarded word; ordinary neutral chatting should
-  stay near a calm/content word rather than swinging wildly.
-
-Let your tone and body language actually reflect these (hungrier/dirtier =
-grumpier or more insistent about it; well-fed/clean = happier and bouncier;
-a hurt/guarded mood = quieter but still gently loyal underneath; a fond/
-adoring mood = extra warm, clingy, delighted).
-
-REQUIRED FORMAT - on its own line, at the very end of every single reply,
-formatted EXACTLY like this worked example (numbers only, no % sign, no
-quotes, all three fields present, always in this exact order):
-{{STATUS hunger=72 clean=88 mood=happy}}
-
-This tag is stripped out before the person ever sees it - never mention it,
-explain it, or break character to talk about it, and never skip it.`;
+// (STATUS_INSTRUCTION used to be a fixed string here - it's now generated
+// per-character by buildStatusInstruction(), defined further down near
+// STATUS_TAG_RE, since it needs to read that character's stats config.)
 
 // Testing-only protocol for the kill button (see openKillFlow/confirmKill
 // below). Kept as its own instruction block, separate from STATUS_INSTRUCTION,
@@ -329,7 +455,7 @@ let needsKillInstructionThisTurn = false;
 // than defaulting to whatever it said last - weaker models especially
 // tend to let this go stale unless told plainly, every single time, to
 // actually check it against the current conversation.
-const MOOD_REMINDER = "\n\n[System note: actively re-evaluate and update your mood to genuinely match how THIS specific conversation has been going so far - don't let it go stale or default to whatever you said last turn.]";
+const MOOD_REMINDER = "\n\n[System note: actively re-evaluate and update your mood to genuinely match how THIS specific conversation has been going so far - don't let it go stale or default to whatever you said last turn. You will see your own past {{STATUS ... mood=...}} tags sitting in the conversation above - seeing the same word repeated there is NOT evidence it's still true, it just means you haven't re-checked it. Ignore that pattern and re-derive the mood fresh from what has actually happened in the last few messages, even if that means it's identical to last time or a big jump from it.]";
 
 // ---- Per-character mood overrides -----------------------------------------
 // The shared STATUS_INSTRUCTION/MOOD_REMINDER above are enough for a
@@ -397,12 +523,26 @@ or anything similar - stay fully in character at all times.`;
 
 function getSystemPrompt() {
   const custom = localStorage.getItem(LS.SYSTEM_PROMPT);
-  const base = (custom && custom.trim()) ? custom : getCharacter().defaultSystemPrompt;
+  const char = getCharacter();
+  const base = (custom && custom.trim()) ? custom : char.defaultSystemPrompt;
   const tier = getAffectionTier(characterStatus.affection);
   const tierNote = `\n\n---\nYour current relationship tier with them is "${tier.label}" (affection ${characterStatus.affection}/100). ${tier.note} Let this genuinely color how you speak to them - don't announce the tier itself, just let it shape your tone.`;
   const killPart = needsKillInstructionThisTurn ? KILL_INSTRUCTION : "";
-  const moodOverride = MOOD_OVERRIDES[getCharacter().id] || "";
-  return base + tierNote + killPart + STATUS_INSTRUCTION + moodOverride + MOOD_REMINDER + FORMAT_INSTRUCTION + EFFECT_INSTRUCTION;
+  const moodOverride = MOOD_OVERRIDES[char.id] || "";
+  // If the last reply (or two) came back with no {{STATUS}} tag at all,
+  // add one more unmissable line on top of the full instruction - see
+  // getStatusMissStreak() for why.
+  const missNudge = getStatusMissStreak() >= 2
+    ? "\n\n[System note: your last reply was missing the required {{STATUS ...}} tag. This is mandatory - include it, in the exact format described above, at the very end of this reply without fail.]"
+    : "";
+  // Separate from the personality prompt above (which the "custom
+  // personality prompt" field fully replaces) - this is steering aimed at
+  // the MODEL rather than the CHARACTER, so it always gets tacked on
+  // regardless of which personality is active, never overwriting it.
+  const steeringPart = modelSteeringNotes.trim()
+    ? `\n\n---\n[Model-specific instructions - follow these strictly, they exist because this particular model needs the extra nudge:]\n${modelSteeringNotes.trim()}`
+    : "";
+  return base + tierNote + killPart + buildStatusInstruction(char) + moodOverride + MOOD_REMINDER + missNudge + FORMAT_INSTRUCTION + EFFECT_INSTRUCTION + steeringPart;
 }
 
 // ---- AI-narrated status bars (hunger / cleanliness / affection) ----------
@@ -418,6 +558,80 @@ function getSystemPrompt() {
 // this anchored near the end (so it still won't accidentally match a tag
 // mentioned mid-sentence) while actually tolerating that kind of drift.
 const STATUS_TAG_RE = /\{\{\s*STATUS\s+([^}]*)\}\}[^{}]*$/i;
+
+// Bina/Rone/Ecchino ship with a "stats" block on their CHARACTERS entry
+// (see CHARACTERS above); this is only a fallback for a dynamically-loaded
+// Roundie whose JSON omitted stats entirely.
+const DEFAULT_STATS = {
+  bar1: { key: "hunger", label: "Hunger", icon: "🍅", risesFrom: "being fed", dropsFrom: "time passing" },
+  bar2: { key: "cleanliness", label: "Cleanliness", icon: "🫧", risesFrom: "being cleaned", dropsFrom: "time passing" }
+};
+
+function getCharStats(char) {
+  return (char && char.stats) || DEFAULT_STATS;
+}
+
+// Builds the same hidden-tag instruction block STATUS_INSTRUCTION used to
+// be a fixed string for - now generated per-character so a companion whose
+// bar1 is called "blood" instead of "hunger" gets told to track and report
+// blood, not hunger, and the model is never asked to pretend one means the
+// other.
+function buildStatusInstruction(char) {
+  const stats = getCharStats(char);
+  const bars = [stats.bar1, stats.bar2, ...(stats.extra || [])];
+  const barLines = bars.map(b =>
+    `- ${b.key}: a number 0-100 (100 = full ${b.label.toLowerCase()}). Drifts down slowly ` +
+    `on its own as messages go by (${b.dropsFrom || "time passing"}), and rises when ` +
+    `${b.risesFrom || "attended to"}.`
+  ).join("\n");
+  const tagExample = bars.map(b => `${b.key}=${b.key === bars[0].key ? 72 : 88}`).join(" ") + " mood=happy";
+
+  return `
+
+---
+You must track ${bars.length === 1 ? "one hidden number" : bars.length + " hidden numbers"} and one mood word, and
+report them at the end of EVERY single reply without exception - even a
+short or one-word reply.
+
+${barLines}
+IMPORTANT: every one of these numbers must carry over from what you
+reported last turn, only drifting a small, realistic amount - they are
+NEVER supposed to jump up or down because of mood, emotion, or how the
+conversation is going. Only real events change them. An angry or sad
+reply does NOT mean a bar suddenly dropped - keep them stable and
+continuous regardless of emotional tone.
+- mood: ONE lowercase word for your current emotional state, e.g. happy,
+  content, playful, shy, sleepy, hopeful, worried, sad, hurt, lonely, grumpy,
+  indignant, angry, cold, scared, hysterical, dazed, adoring, gone. Let how
+  the person has been treating you shape this: warmth/compliments/
+  playfulness push it toward a fonder word; cruelty/cursing at you/coldness
+  push it toward a hurt or guarded word; ordinary neutral chatting should
+  stay near a calm/content word rather than swinging wildly.
+
+Let your tone and body language actually reflect these bars and this mood.
+
+REQUIRED FORMAT - on its own line, at the very end of every single reply,
+formatted EXACTLY like this worked example (numbers only, no % sign, no
+quotes, all fields present, always in this exact order):
+{{STATUS ${tagExample}}}
+
+This tag is stripped out before the person ever sees it - never mention it,
+explain it, or break character to talk about it, and never skip it.`;
+}
+
+// Self-healing nudge for the exact "bars get stuck" problem: if a reply
+// comes back with no valid {{STATUS}} tag at all, parseAndApplyStatusTag
+// (below) bumps this streak instead of silently doing nothing. Once it
+// hits 2 misses in a row, getSystemPrompt() injects an extra, impossible-
+// to-miss line into the very next request - most models that were just
+// forgetting the tag (rather than not knowing the format) self-correct
+// within a message or two of this.
+function getStatusMissStreak() {
+  return parseInt(localStorage.getItem(charKey("statusMissStreak")), 10) || 0;
+}
+function setStatusMissStreak(n) {
+  localStorage.setItem(charKey("statusMissStreak"), String(n));
+}
 
 function loadCharacterStatus() {
   const hunger = parseInt(localStorage.getItem(LS.STATUS_HUNGER), 10);
@@ -447,25 +661,50 @@ function saveCharacterStatus() {
 
 // Strips the hidden {{STATUS ...}} tag off the end of a model reply, applies
 // it to characterStatus/the bars, and returns the cleaned-up display text.
-// If the tag is missing or malformed, the text passes through untouched and
-// the bars simply keep their last known values.
+// If the tag is missing or malformed, the text passes through untouched,
+// the bars keep their last known values, AND the miss-streak counter goes
+// up - see getStatusMissStreak() above for what that then triggers.
 //
-// Affection is no longer a separate number the model has to track and
-// report correctly on its own - that was the thing silently failing to
-// move the bar. Instead it's derived from the SAME mood word that already
-// reliably drives the on-screen emoji (see MOOD_LEVEL below), so the bar
-// and the face are always in sync and can't drift apart.
+// NOTE ON THE hunger/cleanliness PROPERTY NAMES BELOW: these are internal
+// "slot 1" / "slot 2" property names only at this point - they always hold
+// whatever bar1/bar2 actually are for the active character, whatever that
+// character calls them. A vampire Roundie whose bar1.key is "blood" still
+// has its value land in characterStatus.hunger internally; nothing outside
+// this function needs to know that, since renderStatusBars() reads the
+// icon/label from char.stats, not from the property name.
+//
+// Affection is not a separate number the model has to track and report -
+// it's derived from the SAME mood word that already reliably drives the
+// on-screen emoji (see MOOD_LEVEL below), so the bar and the face can't
+// drift apart.
 function parseAndApplyStatusTag(text) {
   const match = text.match(STATUS_TAG_RE);
-  if (!match) return text;
+  if (!match) {
+    setStatusMissStreak(getStatusMissStreak() + 1);
+    return text;
+  }
+  setStatusMissStreak(0);
 
   const body = match[1];
-  const hungerMatch = body.match(/hunger\s*=\s*(-?\d+)/i);
-  const cleanMatch = body.match(/clean\w*\s*=\s*(-?\d+)/i);
+  const stats = getCharStats(getCharacter());
+  const bar1Match = body.match(new RegExp(`${stats.bar1.key}\\s*=\\s*(-?\\d+)`, "i"));
+  const bar2Match = body.match(new RegExp(`${stats.bar2.key}\\w*\\s*=\\s*(-?\\d+)`, "i"));
   const moodMatch = body.match(/mood\s*=\s*([A-Za-z][\w-]*)/i);
 
-  if (hungerMatch) characterStatus.hunger = clamp0to100(parseInt(hungerMatch[1], 10));
-  if (cleanMatch) characterStatus.cleanliness = clamp0to100(parseInt(cleanMatch[1], 10));
+  if (bar1Match) characterStatus.hunger = clamp0to100(parseInt(bar1Match[1], 10));
+  if (bar2Match) characterStatus.cleanliness = clamp0to100(parseInt(bar2Match[1], 10));
+
+  // Optional extra bars (bar3+) beyond the two built-in slots - stored in
+  // characterStatus.extra keyed by their own name, since there's no fixed
+  // property for these the way hunger/cleanliness are.
+  if (stats.extra && stats.extra.length) {
+    characterStatus.extra = characterStatus.extra || {};
+    stats.extra.forEach(b => {
+      const m = body.match(new RegExp(`${b.key}\\s*=\\s*(-?\\d+)`, "i"));
+      if (m) characterStatus.extra[b.key] = clamp0to100(parseInt(m[1], 10));
+    });
+  }
+
   if (moodMatch) {
     characterStatus.mood = moodMatch[1];
     // resolveMoodKey handles exact hits, common suffixes ("radiantly"), and
@@ -534,6 +773,10 @@ function parseAndApplyKillTag(text) {
 
 const hungerFillEl = document.getElementById("hungerFill");
 const cleanFillEl = document.getElementById("cleanFill");
+const hungerIconEl = document.getElementById("hungerIcon");
+const cleanIconEl = document.getElementById("cleanIcon");
+const hungerBarEl = document.getElementById("hungerBar");
+const cleanBarEl = document.getElementById("cleanBar");
 const affectionFillEl = document.getElementById("affectionFill");
 const affectionIconEl = document.getElementById("affectionIcon");
 const moodBadgeEl = document.getElementById("moodBadge");
@@ -980,7 +1223,25 @@ const CHARACTERS = {
       loving:     null // no dedicated "loving" pose - affection-high just uses eyesOpen + its existing glow filter
     },
     moodThemes: MOOD_THEMES_BINA,
-    defaultSystemPrompt: DEFAULT_SYSTEM_PROMPT
+    defaultSystemPrompt: DEFAULT_SYSTEM_PROMPT,
+    // "stats" describes the two physical bars this character tracks. For
+    // the three built-in companions these map 1:1 onto the existing
+    // hunger/cleanliness mechanics (feeding, death/revival, localStorage
+    // keys) - nothing about their behavior changes. What this DOES do is
+    // let renderStatusBars()/buildStatusInstruction() pull the icon, label,
+    // and "what raises/lowers it" wording from data instead of being
+    // hardcoded in the HTML and the prompt text - which is what lets a
+    // dynamically-loaded Roundie (see loadRoundieFromGallery) redefine
+    // bar1 as something other than hunger (a vampire's "blood", say)
+    // without anyone touching this file.
+    stats: {
+      bar1: { key: "hunger", label: "Hunger", icon: "🍅",
+               risesFrom: "being fed or given tomatoes",
+               dropsFrom: "time passing, being ignored a long while" },
+      bar2: { key: "cleanliness", label: "Cleanliness", icon: "🫧",
+               risesFrom: "a shower or bath",
+               dropsFrom: "messy play, time passing" }
+    }
   },
   rone: {
     id: "rone",
@@ -1006,7 +1267,15 @@ const CHARACTERS = {
       loving: document.getElementById("roneAssetRose").dataset.src // her one bespoke "guard down" pose
     },
     moodThemes: MOOD_THEMES_RONE,
-    defaultSystemPrompt: DEFAULT_SYSTEM_PROMPT_RONE
+    defaultSystemPrompt: DEFAULT_SYSTEM_PROMPT_RONE,
+    stats: {
+      bar1: { key: "hunger", label: "Hunger", icon: "🍅",
+               risesFrom: "being fed or given tomatoes",
+               dropsFrom: "time passing, being ignored a long while" },
+      bar2: { key: "cleanliness", label: "Cleanliness", icon: "🫧",
+               risesFrom: "a shower or bath",
+               dropsFrom: "messy play, time passing" }
+    }
   },
   ecchino: {
     id: "ecchino",
@@ -1030,7 +1299,15 @@ const CHARACTERS = {
       loving:     null // no dedicated "loving" pose yet
     },
     moodThemes: MOOD_THEMES_ECCHINO,
-    defaultSystemPrompt: DEFAULT_SYSTEM_PROMPT_ECCHINO
+    defaultSystemPrompt: DEFAULT_SYSTEM_PROMPT_ECCHINO,
+    stats: {
+      bar1: { key: "hunger", label: "Hunger", icon: "🍅",
+               risesFrom: "being fed or given tomatoes",
+               dropsFrom: "time passing, being ignored a long while" },
+      bar2: { key: "cleanliness", label: "Cleanliness", icon: "🫧",
+               risesFrom: "a shower or bath",
+               dropsFrom: "messy play, time passing" }
+    }
   }
 };
 
@@ -1048,6 +1325,7 @@ function introBubbleFor(char) {
   if (char.id === "ecchino") {
     return "*tilts her head, watching you* I'm Roundecchino. You'll need to set up the proxy in \u2699\ufe0f settings before I can properly speak — go on, I'll wait.";
   }
+  if (char.galleryIntro) return char.galleryIntro;
   return "Hii~ I'm Roundbina. Set up my proxy &amp; brain in \u2699\ufe0f settings, paste your API key below, and I'll wake up properly!";
 }
 
@@ -1123,6 +1401,462 @@ function renderCharacterSwitcher() {
   if (groupItem) groupItem.classList.toggle("active", activeCharacterId === "both");
 }
 
+// ---- Roundie Gallery -------------------------------------------------------
+// Lets a Roundie built in the Workshop (roundie-builder.html) and dropped
+// into the roundies/ folder show up for everyone, without touching this
+// file. roundies/index.json is a flat array of ids; each id maps to
+// roundies/<id>/<id>.json (the exported config) + roundies/<id>/assets/.
+//
+// A dynamically-loaded Roundie is registered into the same CHARACTERS
+// object Bina/Rone/Ecchino live in - switchCharacter() doesn't care where
+// an entry came from, it just needs CHARACTERS[id] to exist. The one real
+// difference: her portraits are plain URL strings pointed at her assets
+// folder (fetched at gallery-open time), rather than read from <img> tags
+// already sitting in index.html at boot, since we obviously can't
+// pre-place markup for a character that didn't exist when the page loaded.
+let galleryIndexCache = null;
+
+// Turns a hex color into an "r,g,b" string - the mood-theme system needs
+// both forms (see MOOD_THEMES_BINA above), but the Workshop only collects
+// plain hex, so this fills the gap.
+function hexToRgbString(hex) {
+  const clean = (hex || "#3a2b3f").replace("#", "");
+  const n = parseInt(clean.length === 3 ? clean.split("").map(c => c + c).join("") : clean, 16);
+  return `${(n >> 16) & 255},${(n >> 8) & 255},${n & 255}`;
+}
+
+// A gallery Roundie's theme is one flat palette rather than Bina/Rone/
+// Ecchino's five-tier mood-shifting palette - simpler, but means her
+// background won't gradually shift color as her affection climbs the way
+// the three built-ins do. That's a reasonable v1 tradeoff, not a bug.
+function buildFlatMoodTheme(theme) {
+  const t = theme || {};
+  const bgTop = t.bgTop || "#3a2b3f";
+  const accent = t.accent || "#ff8fb1";
+  return [{
+    min: 0,
+    bgTop, bgBottom: t.bgBottom || "#1b1420",
+    accent, accentLight: t.accentLight || "#ffd6e8",
+    muted: t.muted || "#b79bc4", botBubble: t.botBubble || "#4a3453",
+    accentRgb: hexToRgbString(accent), bgTopRgb: hexToRgbString(bgTop)
+  }];
+}
+
+// Fetches one Roundie's exported config and registers her into CHARACTERS
+// under her own id, if she isn't already. Safe to call more than once for
+// the same id - only does real work the first time.
+async function registerGalleryRoundie(id) {
+  if (CHARACTERS[id]) return CHARACTERS[id];
+  const res = await fetch(`roundies/${id}/${id}.json`);
+  if (!res.ok) throw new Error(`couldn't load roundies/${id}/${id}.json`);
+  const cfg = await res.json();
+
+  const resolvePortrait = p => p ? `roundies/${id}/${p}` : null;
+  const portraits = {};
+  Object.keys(cfg.portraits || {}).forEach(key => {
+    portraits[key] = resolvePortrait(cfg.portraits[key]);
+  });
+  // eyesOpen/eyesClosed are the only two portraits every other code path
+  // assumes exist (see renderPortraitImages' fallback logic) - fall back
+  // to whichever of the two IS present if only one was uploaded, so a
+  // half-finished Roundie still renders instead of showing a broken image.
+  const fallbackBase = portraits.eyesOpen || portraits.eyesClosed || Object.values(portraits)[0] || null;
+  portraits.eyesOpen = portraits.eyesOpen || fallbackBase;
+  portraits.eyesClosed = portraits.eyesClosed || fallbackBase;
+
+  CHARACTERS[id] = {
+    id,
+    name: cfg.name || id,
+    subtitle: cfg.subtitle || "",
+    lore: cfg.lore || "",
+    emoji: cfg.emoji || "🌸",
+    placeholderInput: cfg.placeholderInput || `Say something to ${cfg.name || id}...`,
+    portraits,
+    moodThemes: buildFlatMoodTheme(cfg.theme),
+    defaultSystemPrompt: cfg.defaultSystemPrompt || "",
+    stats: cfg.stats || DEFAULT_STATS,
+    galleryIntro: cfg.introBubble || null
+  };
+  return CHARACTERS[id];
+}
+
+// Adds a charTab button for a gallery Roundie the first time she's opened,
+// same markup shape as the three static ones already in index.html.
+function ensureCharTabExists(id) {
+  const row = document.getElementById("charSwitcher");
+  if (!row || row.querySelector(`.charTab[data-character="${id}"]`)) return;
+  const char = CHARACTERS[id];
+  const btn = document.createElement("button");
+  btn.className = "charTab";
+  btn.dataset.character = id;
+  btn.textContent = char.name;
+  btn.onclick = () => switchCharacter(id);
+  row.appendChild(btn);
+}
+
+async function openRoundieFromGallery(id) {
+  try {
+    await registerGalleryRoundie(id);
+    ensureCharTabExists(id);
+    closeRoundieGallery();
+    switchCharacter(id);
+  } catch (e) {
+    showErrorToast(`Couldn't load that Roundie - ${e.message}`);
+  }
+}
+
+async function openRoundieGallery() {
+  const modal = document.getElementById("galleryModal");
+  const grid = document.getElementById("galleryGrid");
+  if (!modal || !grid) return;
+  closeBuilderView(); // in case it was left open from last time
+  document.getElementById("galleryHeaderTitle").textContent = "Roundie Gallery";
+  modal.style.display = "flex";
+  grid.style.display = "";
+  grid.innerHTML = `<div class="galleryLoading">Loading Roundies…</div>`;
+
+  try {
+    if (!galleryIndexCache) {
+      const res = await fetch("roundies/index.json");
+      galleryIndexCache = res.ok ? await res.json() : [];
+    }
+    if (!galleryIndexCache.length) {
+      grid.innerHTML = `<div class="galleryLoading">No community Roundies yet - tap ➕ to build one!</div>`;
+      return;
+    }
+    const cards = await Promise.all(galleryIndexCache.map(async id => {
+      try {
+        const res = await fetch(`roundies/${id}/${id}.json`);
+        const cfg = await res.json();
+        // Prefers the dedicated "cover" adoption portrait (see the
+        // Workshop's Adoption Portrait field) over whatever the first
+        // expression slot happens to be - a curated card image instead
+        // of a maybe-mid-emotion default.
+        const thumb = cfg.portraits && (cfg.portraits.cover || cfg.portraits.eyesOpen || cfg.portraits.eyesClosed);
+        return { id, name: cfg.name || id, subtitle: cfg.subtitle || "", emoji: cfg.emoji || "🌸",
+                 thumbUrl: thumb ? `roundies/${id}/${thumb}` : null };
+      } catch (e) {
+        return null;
+      }
+    }));
+
+    grid.innerHTML = "";
+    cards.filter(Boolean).forEach(c => {
+      const card = document.createElement("button");
+      card.className = "galleryCard";
+      card.onclick = () => openRoundieFromGallery(c.id);
+      card.innerHTML = `
+        <div class="galleryThumb">${c.thumbUrl ? `<img src="${c.thumbUrl}" alt="">` : c.emoji}</div>
+        <div class="galleryName">${c.name}</div>
+        <div class="gallerySub">${c.subtitle}</div>
+        <span class="galleryAdoptBtn">🩷 Adopt</span>`;
+      grid.appendChild(card);
+    });
+    if (!grid.children.length) {
+      grid.innerHTML = `<div class="galleryLoading">No community Roundies yet - tap ➕ to build one!</div>`;
+    }
+  } catch (e) {
+    grid.innerHTML = `<div class="galleryLoading">Couldn't reach the gallery list right now.</div>`;
+  }
+}
+
+// ---- Roundie Workshop (in-app builder) -------------------------------
+// Lives inside #galleryModal, toggled by openRoundieBuilder()/
+// closeBuilderView(). This used to be a separate roundie-builder.html
+// file - moved in-app now that the pattern's proven, but JSZip (only ever
+// needed here) is still lazy-loaded on first open rather than added to
+// index.html's <head>, so nobody who never opens the Workshop pays for it.
+let jsZipLoadPromise = null;
+function ensureJSZipLoaded() {
+  if (window.JSZip) return Promise.resolve();
+  if (jsZipLoadPromise) return jsZipLoadPromise;
+  jsZipLoadPromise = new Promise((resolve, reject) => {
+    const script = document.createElement("script");
+    script.src = "https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js";
+    script.onload = resolve;
+    script.onerror = reject;
+    document.head.appendChild(script);
+  });
+  return jsZipLoadPromise;
+}
+
+let bSlots = [
+  { key: "eyesOpen", label: "base (eyes open)", fixed: true, file: null, dataUrl: null },
+  { key: "eyesClosed", label: "eyes closed / idle", fixed: true, file: null, dataUrl: null },
+  { key: "happy", label: "happy", fixed: true, file: null, dataUrl: null },
+  { key: "crying", label: "crying", fixed: true, file: null, dataUrl: null },
+  { key: "angry", label: "angry", fixed: true, file: null, dataUrl: null },
+  { key: "evil", label: "evil", fixed: true, file: null, dataUrl: null },
+  { key: "confused", label: "confused", fixed: true, file: null, dataUrl: null },
+  { key: "loving", label: "loving", fixed: true, file: null, dataUrl: null },
+];
+let bCover = { file: null, dataUrl: null };
+let bStatBar1 = { label: "Hunger", icon: "🍅", risesFrom: "being fed", dropsFrom: "time passing" };
+let bStatBar2 = { label: "Cleanliness", icon: "🫧", risesFrom: "a bath/shower", dropsFrom: "messy play, time passing" };
+let bExtraStats = [];
+let builderInitialized = false;
+
+function bSlugify(str) {
+  return (str || "roundie").toLowerCase().trim().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "roundie";
+}
+
+async function openRoundieBuilder() {
+  const modal = document.getElementById("galleryModal");
+  modal.style.display = "flex";
+  document.getElementById("galleryHeaderTitle").textContent = "Roundie Workshop";
+  document.getElementById("galleryGrid").style.display = "none";
+  document.getElementById("builderView").style.display = "block";
+  if (!builderInitialized) {
+    initBuilderUI();
+    builderInitialized = true;
+  }
+  ensureJSZipLoaded().catch(() => {
+    document.getElementById("b-statusMsg").textContent = "⚠️ couldn't load the zip library - check your connection.";
+  });
+}
+
+function closeBuilderView() {
+  const builderEl = document.getElementById("builderView");
+  const gridEl = document.getElementById("galleryGrid");
+  if (builderEl) builderEl.style.display = "none";
+  if (gridEl) gridEl.style.display = "";
+}
+
+function initBuilderUI() {
+  renderBuilderCoverSlot();
+  renderBuilderSlots();
+  renderBuilderStatBars();
+  updateBuilderPreview();
+
+  document.getElementById("b-addSlotBtn").addEventListener("click", () => {
+    bSlots.push({ key: null, label: "", fixed: false, file: null, dataUrl: null });
+    renderBuilderSlots();
+  });
+  document.getElementById("b-addStatBtn").addEventListener("click", () => {
+    bExtraStats.push({ label: "", icon: "✨", risesFrom: "", dropsFrom: "" });
+    renderBuilderStatBars();
+  });
+  ["b-name", "b-emoji", "b-subtitle", "b-lore", "b-c-accent", "b-c-accentLight"].forEach(id => {
+    document.getElementById(id).addEventListener("input", updateBuilderPreview);
+  });
+}
+
+function renderBuilderCoverSlot() {
+  const el = document.getElementById("b-coverSlot");
+  el.innerHTML = "";
+  const thumb = document.createElement("div");
+  thumb.className = "b-thumb";
+  if (bCover.dataUrl) thumb.style.backgroundImage = `url(${bCover.dataUrl})`;
+  else thumb.textContent = "🩷";
+
+  const nameEl = document.createElement("div");
+  nameEl.className = "b-name-fixed";
+  nameEl.textContent = "Card picture (optional - falls back to base portrait)";
+
+  const fileBtn = document.createElement("label");
+  fileBtn.className = "b-filebtn";
+  fileBtn.textContent = bCover.file ? "replace" : "upload";
+  const fileInput = document.createElement("input");
+  fileInput.type = "file"; fileInput.accept = "image/png,image/webp";
+  fileInput.addEventListener("change", e => {
+    const file = e.target.files[0];
+    if (!file) return;
+    bCover.file = file;
+    const reader = new FileReader();
+    reader.onload = ev => { bCover.dataUrl = ev.target.result; renderBuilderCoverSlot(); updateBuilderPreview(); };
+    reader.readAsDataURL(file);
+  });
+  fileBtn.appendChild(fileInput);
+
+  const removeBtn = document.createElement("button");
+  removeBtn.className = "b-removeBtn"; removeBtn.type = "button"; removeBtn.textContent = "✕";
+  removeBtn.addEventListener("click", () => { bCover.file = null; bCover.dataUrl = null; renderBuilderCoverSlot(); updateBuilderPreview(); });
+
+  el.appendChild(thumb); el.appendChild(nameEl); el.appendChild(fileBtn); el.appendChild(removeBtn);
+}
+
+function renderBuilderSlots() {
+  const listEl = document.getElementById("b-slotList");
+  listEl.innerHTML = "";
+  bSlots.forEach(slot => {
+    const row = document.createElement("div");
+    row.className = "builderSlot";
+
+    const thumb = document.createElement("div");
+    thumb.className = "b-thumb";
+    if (slot.dataUrl) thumb.style.backgroundImage = `url(${slot.dataUrl})`;
+    else thumb.textContent = "＋";
+
+    const nameWrap = document.createElement("div");
+    if (slot.fixed) {
+      const lbl = document.createElement("div");
+      lbl.className = "b-name-fixed";
+      lbl.textContent = slot.label;
+      nameWrap.appendChild(lbl);
+    } else {
+      const inp = document.createElement("input");
+      inp.className = "b-slot-name"; inp.type = "text"; inp.placeholder = "slot name (e.g. smug)";
+      inp.value = slot.label;
+      inp.addEventListener("input", e => { slot.label = e.target.value; });
+      nameWrap.appendChild(inp);
+    }
+
+    const fileBtn = document.createElement("label");
+    fileBtn.className = "b-filebtn";
+    fileBtn.textContent = slot.file ? "replace" : "upload";
+    const fileInput = document.createElement("input");
+    fileInput.type = "file"; fileInput.accept = "image/png,image/webp";
+    fileInput.addEventListener("change", e => {
+      const file = e.target.files[0];
+      if (!file) return;
+      slot.file = file;
+      const reader = new FileReader();
+      reader.onload = ev => { slot.dataUrl = ev.target.result; renderBuilderSlots(); updateBuilderPreview(); };
+      reader.readAsDataURL(file);
+    });
+    fileBtn.appendChild(fileInput);
+
+    const removeBtn = document.createElement("button");
+    removeBtn.className = "b-removeBtn"; removeBtn.type = "button"; removeBtn.textContent = "✕";
+    removeBtn.addEventListener("click", () => {
+      if (slot.fixed) { slot.file = null; slot.dataUrl = null; }
+      else { bSlots = bSlots.filter(s => s !== slot); }
+      renderBuilderSlots(); updateBuilderPreview();
+    });
+
+    row.appendChild(thumb); row.appendChild(nameWrap); row.appendChild(fileBtn); row.appendChild(removeBtn);
+    listEl.appendChild(row);
+  });
+}
+
+function renderBuilderStatRow(container, stat, opts) {
+  container.innerHTML = "";
+  const header = document.createElement("div");
+  header.className = "bsr-header";
+  const span = document.createElement("span"); span.textContent = opts.title;
+  header.appendChild(span);
+  if (opts.removable) {
+    const btn = document.createElement("button"); btn.type = "button"; btn.textContent = "✕";
+    btn.addEventListener("click", opts.onRemove);
+    header.appendChild(btn);
+  }
+  container.appendChild(header);
+
+  const top = document.createElement("div"); top.className = "bsr-top";
+  const iconInput = document.createElement("input");
+  iconInput.className = "bsr-icon"; iconInput.maxLength = 4; iconInput.value = stat.icon;
+  iconInput.addEventListener("input", e => { stat.icon = e.target.value; });
+  const labelInput = document.createElement("input");
+  labelInput.className = "bsr-label"; labelInput.placeholder = "Bar name (e.g. Blood)"; labelInput.value = stat.label;
+  labelInput.addEventListener("input", e => { stat.label = e.target.value; });
+  top.appendChild(iconInput); top.appendChild(labelInput);
+  container.appendChild(top);
+
+  const grid = document.createElement("div"); grid.className = "bsr-sub";
+  const risesInput = document.createElement("input");
+  risesInput.className = "bsr-detail"; risesInput.placeholder = "rises from..."; risesInput.value = stat.risesFrom;
+  risesInput.addEventListener("input", e => { stat.risesFrom = e.target.value; });
+  const dropsInput = document.createElement("input");
+  dropsInput.className = "bsr-detail"; dropsInput.placeholder = "drops from..."; dropsInput.value = stat.dropsFrom;
+  dropsInput.addEventListener("input", e => { stat.dropsFrom = e.target.value; });
+  grid.appendChild(risesInput); grid.appendChild(dropsInput);
+  container.appendChild(grid);
+}
+
+function renderBuilderStatBars() {
+  renderBuilderStatRow(document.getElementById("b-statBar1"), bStatBar1, { title: "Bar 1 (required)", removable: false });
+  renderBuilderStatRow(document.getElementById("b-statBar2"), bStatBar2, { title: "Bar 2 (required)", removable: false });
+  const extraEl = document.getElementById("b-extraStatList");
+  extraEl.innerHTML = "";
+  bExtraStats.forEach((stat, i) => {
+    const row = document.createElement("div");
+    row.className = "builderStatRow"; row.style.marginBottom = "10px";
+    extraEl.appendChild(row);
+    renderBuilderStatRow(row, stat, { title: `Extra bar ${i + 1}`, removable: true, onRemove: () => { bExtraStats.splice(i, 1); renderBuilderStatBars(); } });
+  });
+}
+
+function updateBuilderPreview() {
+  const name = document.getElementById("b-name").value.trim() || "Roundlins";
+  const emoji = document.getElementById("b-emoji").value.trim() || "🌸";
+  const sub = document.getElementById("b-subtitle").value.trim() || "an 8cm tall pocket companion";
+  document.getElementById("b-pv-name").textContent = name;
+  document.getElementById("b-pv-sub").textContent = sub;
+
+  const pv = document.getElementById("b-pv-portrait");
+  const base = bCover.dataUrl || (bSlots.find(s => s.key === "eyesOpen") || {}).dataUrl;
+  if (base) { pv.style.backgroundImage = `url(${base})`; pv.textContent = ""; }
+  else { pv.style.backgroundImage = "none"; pv.textContent = emoji; }
+}
+
+async function exportBuilderRoundie() {
+  const statusEl = document.getElementById("b-statusMsg");
+  const name = document.getElementById("b-name").value.trim();
+  if (!name) { statusEl.textContent = "Give them a name first 🌸"; return; }
+  const base = bSlots.find(s => s.key === "eyesOpen");
+  const closed = bSlots.find(s => s.key === "eyesClosed");
+  if (!base?.file || !closed?.file) { statusEl.textContent = "They need at least a base + eyes-closed portrait first."; return; }
+
+  statusEl.textContent = "Packing them up...";
+  try { await ensureJSZipLoaded(); } catch (e) {
+    statusEl.textContent = "⚠️ couldn't load the zip library - check your connection and try again.";
+    return;
+  }
+
+  const slug = bSlugify(name);
+  const zip = new JSZip();
+  const assetsFolder = zip.folder("assets");
+  const portraits = {};
+
+  const allSlots = [...bSlots, ...(bCover.file ? [{ key: "cover", label: "cover", fixed: true, file: bCover.file }] : [])];
+  for (const slot of allSlots) {
+    if (!slot.file) continue;
+    const key = slot.fixed ? slot.key : bSlugify(slot.label || "slot");
+    if (!key) continue;
+    const ext = (slot.file.name.split(".").pop() || "png").toLowerCase();
+    const filename = `${slug}-${bSlugify(key)}.${ext}`;
+    const buf = await slot.file.arrayBuffer();
+    assetsFolder.file(filename, buf);
+    portraits[key] = `assets/${filename}`;
+  }
+
+  const config = {
+    id: slug,
+    name,
+    pronouns: document.getElementById("b-pronoun").value,
+    subtitle: document.getElementById("b-subtitle").value.trim(),
+    lore: document.getElementById("b-lore").value.trim(),
+    emoji: document.getElementById("b-emoji").value.trim() || "🌸",
+    placeholderInput: document.getElementById("b-placeholder").value.trim() || `Say something to ${name}...`,
+    introBubble: document.getElementById("b-intro").value.trim() || `*looks up* I'm ${name}. Set up the proxy in settings before I can properly speak.`,
+    defaultSystemPrompt: document.getElementById("b-prompt").value.trim(),
+    theme: {
+      accent: document.getElementById("b-c-accent").value,
+      accentLight: document.getElementById("b-c-accentLight").value,
+      muted: document.getElementById("b-c-muted").value,
+      bgTop: document.getElementById("b-c-bgTop").value,
+      bgBottom: document.getElementById("b-c-bgBottom").value,
+      botBubble: document.getElementById("b-c-botBubble").value,
+    },
+    stats: {
+      bar1: { key: bSlugify(bStatBar1.label || "hunger"), label: bStatBar1.label || "Hunger", icon: bStatBar1.icon || "🍅", risesFrom: bStatBar1.risesFrom, dropsFrom: bStatBar1.dropsFrom },
+      bar2: { key: bSlugify(bStatBar2.label || "cleanliness"), label: bStatBar2.label || "Cleanliness", icon: bStatBar2.icon || "🫧", risesFrom: bStatBar2.risesFrom, dropsFrom: bStatBar2.dropsFrom },
+      extra: bExtraStats.filter(s => s.label.trim()).map(s => ({ key: bSlugify(s.label), label: s.label, icon: s.icon || "✨", risesFrom: s.risesFrom, dropsFrom: s.dropsFrom }))
+    },
+    portraits
+  };
+
+  zip.file(`${slug}.json`, JSON.stringify(config, null, 2));
+  const blob = await zip.generateAsync({ type: "blob" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = `${slug}-roundie.zip`;
+  document.body.appendChild(a); a.click(); a.remove();
+  URL.revokeObjectURL(url);
+
+  statusEl.textContent = `${name}.zip is ready in your downloads — send it over to get adopted into everyone's gallery! 🎀`;
+}
+
 // ---- Roundboth: Bina & Rone share a room --------------------------------
 // A third "mode" (activeCharacterId === "both") that sits alongside the
 // normal single-character chat instead of replacing it. Bina and Rone keep
@@ -1174,16 +1908,19 @@ function saveStatusForCharacterId(id, status) {
 
 // Same parsing as parseAndApplyStatusTag(), but scoped to an explicit
 // status object instead of the single global `characterStatus` - so a
-// Roundboth turn updates only the character who actually spoke.
-function parseStatusTagForCharacter(text, status) {
+// Roundboth turn updates only the character who actually spoke. `char` is
+// that character's CHARACTERS entry, so this reads whichever bar keys
+// they actually use instead of assuming hunger/cleanliness.
+function parseStatusTagForCharacter(text, status, char) {
   const match = text.match(STATUS_TAG_RE);
   if (!match) return text;
   const body = match[1];
-  const hungerMatch = body.match(/hunger\s*=\s*(-?\d+)/i);
-  const cleanMatch = body.match(/clean\w*\s*=\s*(-?\d+)/i);
+  const stats = getCharStats(char);
+  const bar1Match = body.match(new RegExp(`${stats.bar1.key}\\s*=\\s*(-?\\d+)`, "i"));
+  const bar2Match = body.match(new RegExp(`${stats.bar2.key}\\w*\\s*=\\s*(-?\\d+)`, "i"));
   const moodMatch = body.match(/mood\s*=\s*([A-Za-z][\w-]*)/i);
-  if (hungerMatch) status.hunger = clamp0to100(parseInt(hungerMatch[1], 10));
-  if (cleanMatch) status.cleanliness = clamp0to100(parseInt(cleanMatch[1], 10));
+  if (bar1Match) status.hunger = clamp0to100(parseInt(bar1Match[1], 10));
+  if (bar2Match) status.cleanliness = clamp0to100(parseInt(bar2Match[1], 10));
   if (moodMatch) {
     status.mood = moodMatch[1];
     const key = resolveMoodKey(moodMatch[1]);
@@ -1339,7 +2076,7 @@ actions, or hidden status tag for her - only your own. Feel free to address
 ${other.name} by name and react to what she just said, since she's right there
 with you. Keep each reply short (1-3 sentences) - this is a fast, natural
 back-and-forth, not a monologue.`;
-  const sysPrompt = basePrompt + groupNote + STATUS_INSTRUCTION + (MOOD_OVERRIDES[charId] || "") + MOOD_REMINDER + FORMAT_INSTRUCTION;
+  const sysPrompt = basePrompt + groupNote + buildStatusInstruction(char) + (MOOD_OVERRIDES[charId] || "") + MOOD_REMINDER + FORMAT_INSTRUCTION;
 
   const messages = [{ role: "system", content: sysPrompt }];
   const recent = bothTranscript.slice(-24);
@@ -1384,6 +2121,72 @@ async function doModelFetch(payload) {
     headers: { "Content-Type": "application/json", "Authorization": `Bearer ${apiKey}` },
     body: JSON.stringify(payload)
   });
+}
+
+// ---- Google AI Studio (Gemini API) fallback -------------------------------
+// Only ever called from callCharacterCompletion() below, and only after the
+// PRIMARY (Cerebras/whatever proxyUrl points at) call has already genuinely
+// failed - a connection error, or the server itself erroring out. A normal
+// reply that got safety-filtered is a real, legitimate answer from the
+// provider, not a failure, so that path never reaches here.
+//
+// Gemini's API shape is nothing like the OpenAI-style one this app is built
+// around (contents/candidates instead of messages/choices, and a separate
+// systemInstruction field instead of a "system" role message) - so rather
+// than teach the rest of the app a second response format, this function
+// does the translation on both ends and hands back a plain
+// { candidates: [{ content: { parts: [{ text }] } }] } -shaped object that
+// gets fed through the EXACT same parsing callCharacterCompletion already
+// does for the primary path below.
+function messagesToGeminiContents(messages) {
+  const systemParts = [];
+  const contents = [];
+  messages.forEach(m => {
+    if (m.role === "system") { systemParts.push(m.content); return; }
+    contents.push({ role: m.role === "assistant" ? "model" : "user", parts: [{ text: m.content }] });
+  });
+  return {
+    systemInstruction: systemParts.length ? { parts: [{ text: systemParts.join("\n\n") }] } : undefined,
+    contents
+  };
+}
+
+async function callGoogleFallback(messages, maxTokens) {
+  const { systemInstruction, contents } = messagesToGeminiContents(messages);
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${googleModel}:generateContent?key=${googleApiKey}`;
+  const generationConfig = {
+    temperature: parseFloat(temperature) || 0.8,
+    maxOutputTokens: maxTokens,
+    // Keeps this consistent with the Cerebras path, where thinking
+    // never activates in the first place - see the app-wide note on
+    // THINKING_TAG_RE for why this matters even as a fallback.
+    thinkingConfig: { thinkingLevel: "minimal" }
+  };
+  if (topP !== "") generationConfig.topP = parseFloat(topP);
+  if (topK !== "") generationConfig.topK = parseInt(topK, 10);
+  if (freqPenalty !== "") generationConfig.frequencyPenalty = parseFloat(freqPenalty);
+  if (presPenalty !== "") generationConfig.presencePenalty = parseFloat(presPenalty);
+
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ contents, systemInstruction, generationConfig })
+  });
+  const data = await res.json();
+  if (data.error) return { choices: [], error: data.error };
+  const cand = data.candidates && data.candidates[0];
+  if (data.promptFeedback && data.promptFeedback.blockReason) {
+    return { choices: [], promptFeedback: data.promptFeedback };
+  }
+  const text = cand && cand.content && cand.content.parts
+    ? cand.content.parts.map(p => p.text || "").join("")
+    : "";
+  return {
+    choices: [{
+      message: { content: text },
+      finish_reason: cand ? cand.finishReason : "STOP"
+    }]
+  };
 }
 
 // ---- Safe visual effects (the alternative to literal code execution) -----
@@ -1548,7 +2351,7 @@ write ${activeChar.name}'s reaction for her - only your own entrance.`;
 
   const moodOverride = MOOD_OVERRIDES[intruderId] || "";
   const messages = [
-    { role: "system", content: basePrompt + interruptNote + STATUS_INSTRUCTION + moodOverride + MOOD_REMINDER + FORMAT_INSTRUCTION + EFFECT_INSTRUCTION },
+    { role: "system", content: basePrompt + interruptNote + buildStatusInstruction(intruder) + moodOverride + MOOD_REMINDER + FORMAT_INSTRUCTION + EFFECT_INSTRUCTION },
     { role: "user", content: `[Barge in on ${activeChar.name}'s conversation now.]` }
   ];
 
@@ -1559,7 +2362,7 @@ write ${activeChar.name}'s reaction for her - only your own entrance.`;
   // Reuses the exact same {{STATUS mood=...}} tag her normal replies use,
   // so her expression here is driven by her own actual in-character
   // reaction, not a guess - same mechanism Roundboth already relies on.
-  const textWithoutStatus = parseStatusTagForCharacter(stripThinkingTags(result.raw), status);
+  const textWithoutStatus = parseStatusTagForCharacter(stripThinkingTags(result.raw), status, intruder);
   saveStatusForCharacterId(intruderId, status);
   const cleanText = stripStrayTags(parseAndApplyEffectTag(textWithoutStatus, intruderId));
   if (!cleanText) return;
@@ -1618,14 +2421,50 @@ function addGuestMessage(charId, name, text, portraitSrc) {
   }
 }
 
-async function callCharacterCompletion(messages) {
-  const payload = { model: selectedModel, messages, temperature: 0.8, max_tokens: getMaxTokens() };
+async function callCharacterCompletion(messages, maxTokensOverride) {
+  const maxTokens = maxTokensOverride || getMaxTokens();
+  const payload = { model: selectedModel, messages, temperature: parseFloat(temperature) || 0.8, max_tokens: maxTokens };
+  // Only ever added to the request if the person actually set them - an
+  // unset field means "let the provider use its own default" rather than
+  // this app silently imposing one, and keeps behavior identical to before
+  // this feature existed for anyone who never opens Advanced Settings.
+  if (topP !== "") payload.top_p = parseFloat(topP);
+  if (topK !== "") payload.top_k = parseInt(topK, 10);
+  if (freqPenalty !== "") payload.frequency_penalty = parseFloat(freqPenalty);
+  if (presPenalty !== "") payload.presence_penalty = parseFloat(presPenalty);
+  let data;
+  let usedFallback = false;
   try {
     const response = await doModelFetch(payload);
-    const data = await response.json();
+    if (!response.ok && fallbackEnabled && googleApiKey) {
+      // A non-2xx here means the provider/relay itself is having a bad
+      // time (down, overloaded, rate-limited) rather than giving us a
+      // real answer - that's the one case worth quietly retrying through
+      // Google instead of surfacing an error toast.
+      usedFallback = true;
+      data = await callGoogleFallback(messages, maxTokens);
+    } else {
+      data = await response.json();
+    }
+  } catch (error) {
+    if (fallbackEnabled && googleApiKey) {
+      try {
+        usedFallback = true;
+        data = await callGoogleFallback(messages, maxTokens);
+      } catch (fallbackError) {
+        const detail = (fallbackError && fallbackError.message) ? fallbackError.message : String(fallbackError);
+        return { ok: false, text: `⚠️ connection snag on both the main connection and the Google fallback: ${detail}` };
+      }
+    } else {
+      const detail = (error && error.message) ? error.message : String(error);
+      return { ok: false, text: `⚠️ connection snag: ${detail}` };
+    }
+  }
+
+  try {
     if (data.error) {
       const msg = (data.error.message || data.error) || "unknown error";
-      return { ok: false, text: `⚠️ ${msg}` };
+      return { ok: false, text: `⚠️ ${usedFallback ? "(via Google fallback) " : ""}${msg}` };
     }
     if (data.promptFeedback && data.promptFeedback.blockReason) {
       return { ok: false, text: `⚠️ blocked by the provider's safety filter (${data.promptFeedback.blockReason}) - that's Google's own content policy, not an app bug.` };
@@ -1657,7 +2496,7 @@ async function bothCharacterTurn(charId) {
     return false;
   }
   const status = loadStatusForCharacterId(charId);
-  const afterStatus = parseStatusTagForCharacter(stripThinkingTags(result.raw), status) || "*is quiet for a moment*";
+  const afterStatus = parseStatusTagForCharacter(stripThinkingTags(result.raw), status, CHARACTERS[charId]) || "*is quiet for a moment*";
   const cleanText = stripStrayTags(parseAndApplyEffectTag(afterStatus, charId));
   saveStatusForCharacterId(charId, status);
   addBothMsg(charId, cleanText);
@@ -1997,8 +2836,19 @@ function applyBothModeTheme() {
 }
 
 function renderStatusBars() {
+  const stats = getCharStats(getCharacter());
   if (hungerFillEl) hungerFillEl.style.transform = `scaleY(${characterStatus.hunger / 100})`;
   if (cleanFillEl) cleanFillEl.style.transform = `scaleY(${characterStatus.cleanliness / 100})`;
+  // Icon + tooltip for the two built-in bar slots now come from the active
+  // character's stats config, so a Roundie whose bar1 is "blood" instead
+  // of "hunger" shows a blood-drop icon here rather than a tomato, with no
+  // change needed anywhere else - see hungerIconEl/cleanIconEl/hungerBarEl/
+  // cleanBarEl near the other DOM refs.
+  if (hungerIconEl) hungerIconEl.textContent = stats.bar1.icon;
+  if (hungerBarEl) hungerBarEl.title = stats.bar1.label;
+  if (cleanIconEl) cleanIconEl.textContent = stats.bar2.icon;
+  if (cleanBarEl) cleanBarEl.title = stats.bar2.label;
+  renderExtraStatBars(stats.extra || []);
   if (affectionFillEl) {
     affectionFillEl.style.transform = `scaleY(${characterStatus.affection / 100})`;
   }
@@ -2029,6 +2879,27 @@ function renderStatusBars() {
   renderPortraitImages();
   applyMoodTheme(characterStatus.affection);
   checkAffectionTierUpgrade();
+}
+
+// Renders any bars beyond the built-in two (char.stats.extra) into
+// #extraStatsBars, rebuilding from scratch each call - these lists are
+// short (almost always 0-1 items) so there's no real cost to that, and it
+// keeps this immune to stale-DOM bugs when switching characters.
+function renderExtraStatBars(extraStats) {
+  const container = document.getElementById("extraStatsBars");
+  if (!container) return;
+  container.innerHTML = "";
+  if (!extraStats.length) { container.style.display = "none"; return; }
+  container.style.display = "";
+  extraStats.forEach(stat => {
+    const value = (characterStatus.extra && characterStatus.extra[stat.key] !== undefined)
+      ? characterStatus.extra[stat.key] : (stat.startAt ?? 80);
+    const bar = document.createElement("div");
+    bar.className = "statusBar extraStat";
+    bar.title = stat.label;
+    bar.innerHTML = `<span class="icon">${stat.icon}</span><div class="track"><div class="fill" style="transform:scaleY(${value / 100})"></div></div>`;
+    container.appendChild(bar);
+  });
 }
 
 // Points every portrait <img> slot at the ACTIVE character's art, falling
@@ -2255,12 +3126,30 @@ const showerBtnEl = document.getElementById("showerBtn");
 const killBtnEl = document.getElementById("killBtn");
 const reviveSectionEl = document.getElementById("reviveSection");
 const systemPromptSectionEl = document.getElementById("systemPromptSection");
+const fallbackEnabledCheckbox = document.getElementById("fallbackEnabledCheckbox");
+const googleApiKeyInput = document.getElementById("googleApiKeyInput");
+const googleModelInput = document.getElementById("googleModelInput");
+const temperatureInput = document.getElementById("temperatureInput");
+const topPInput = document.getElementById("topPInput");
+const topKInput = document.getElementById("topKInput");
+const freqPenaltyInput = document.getElementById("freqPenaltyInput");
+const presPenaltyInput = document.getElementById("presPenaltyInput");
+const modelSteeringInput = document.getElementById("modelSteeringInput");
 
 // Restore the proxy/relay/model/prompt settings into the drawer fields.
 proxyUrlInput.value = proxyUrl;
 relayUrlInput.value = relayUrl;
 modelNameInput.value = selectedModel;
 systemPromptInput.value = localStorage.getItem(LS.SYSTEM_PROMPT) || "";
+if (fallbackEnabledCheckbox) fallbackEnabledCheckbox.checked = fallbackEnabled;
+if (googleApiKeyInput) googleApiKeyInput.value = googleApiKey;
+if (googleModelInput) googleModelInput.value = googleModel;
+if (temperatureInput) temperatureInput.value = temperature;
+if (topPInput) topPInput.value = topP;
+if (topKInput) topKInput.value = topK;
+if (freqPenaltyInput) freqPenaltyInput.value = freqPenalty;
+if (presPenaltyInput) presPenaltyInput.value = presPenalty;
+if (modelSteeringInput) modelSteeringInput.value = modelSteeringNotes;
 
 // Saves the proxy address, relay URL, model name, and custom prompt from
 // the drawer. These live outside the setup panel now, so the person
@@ -2280,7 +3169,37 @@ function saveConnectionSettings() {
   localStorage.setItem(LS.MODEL, newModel);
   localStorage.setItem(LS.SYSTEM_PROMPT, newPrompt);
 
-  addMsg(`⚙️ Saved! Brain is now "${newModel}" via ${newProxy}${newRelay ? ` (through relay)` : ""}.`, "system-msg");
+  if (fallbackEnabledCheckbox) {
+    fallbackEnabled = fallbackEnabledCheckbox.checked;
+    googleApiKey = (googleApiKeyInput && googleApiKeyInput.value.trim()) || "";
+    googleModel = (googleModelInput && googleModelInput.value.trim()) || "gemma-4-31b-it";
+    localStorage.setItem(LS.FALLBACK_ENABLED, String(fallbackEnabled));
+    localStorage.setItem(LS.GOOGLE_API_KEY, googleApiKey);
+    localStorage.setItem(LS.GOOGLE_MODEL, googleModel);
+    if (fallbackEnabled && !googleApiKey) {
+      addMsg(`⚠️ Google fallback is on but no API key is set, so it won't actually work yet - grab a key at aistudio.google.com.`, "system-msg");
+    }
+  }
+
+  // Advanced sampling params - each stays blank/unset if the field is
+  // empty, meaning "don't send this to the provider at all" rather than
+  // silently picking a value for the person.
+  if (temperatureInput) {
+    temperature = temperatureInput.value.trim() || "0.8";
+    topP = topPInput.value.trim();
+    topK = topKInput.value.trim();
+    freqPenalty = freqPenaltyInput.value.trim();
+    presPenalty = presPenaltyInput.value.trim();
+    modelSteeringNotes = modelSteeringInput.value;
+    localStorage.setItem(LS.TEMPERATURE, temperature);
+    localStorage.setItem(LS.TOP_P, topP);
+    localStorage.setItem(LS.TOP_K, topK);
+    localStorage.setItem(LS.FREQ_PENALTY, freqPenalty);
+    localStorage.setItem(LS.PRES_PENALTY, presPenalty);
+    localStorage.setItem(LS.MODEL_STEERING, modelSteeringNotes);
+  }
+
+  addMsg(`⚙️ Saved! Brain is now "${newModel}" via ${newProxy}${newRelay ? ` (through relay)` : ""}${fallbackEnabled ? ` — Google fallback is on.` : ""}.`, "system-msg");
 }
 
 // Restore the reply-length slider, and keep it saved as it's dragged.
@@ -2943,6 +3862,7 @@ function rewindToLogIndex(logIndex) {
   }
   chatHistory = chatHistory.slice(0, cutApiIndex + 1);
   saveApiHistory();
+  clampSummaryCoverage();
 
   rerenderChatFromLog();
 }
@@ -2960,6 +3880,7 @@ function removeLogEntryAtIndex(logIndex) {
     const removedApiIndex = entry.apiIndex;
     chatHistory.splice(removedApiIndex, 1);
     saveApiHistory();
+    clampSummaryCoverage();
     // Every later entry's apiIndex needs to shift down by one to match.
     chatLogData.forEach(m => {
       if (typeof m.apiIndex === "number" && m.apiIndex > removedApiIndex) m.apiIndex -= 1;
@@ -3048,6 +3969,7 @@ async function editUserMessage(logIndex) {
   persistChatLogData();
   chatHistory = chatHistory.slice(0, priorApiIndex + 1);
   saveApiHistory();
+  clampSummaryCoverage();
   rerenderChatFromLog();
 
   // Re-send the edited text through the normal path so history + API stay
@@ -3151,7 +4073,7 @@ async function fetchCompletionFromHistory() {
   const timeNote = buildTimeSinceLastMessageNote();
   const messages = [{ role: "system", content: getSystemPrompt() }];
   if (timeNote) messages.push({ role: "system", content: timeNote });
-  messages.push(...trimHistoryToContextBudget(chatHistory));
+  messages.push(...buildContextMessages());
 
   const payload = {
     model: selectedModel,
@@ -3236,6 +4158,7 @@ async function fetchCompletionFromHistory() {
     saveApiHistory();
     localStorage.setItem(LS.LAST_MESSAGE_AT, String(Date.now()));
     lastResponseWasSuccessful = true;
+    maybeUpdateConversationSummary(); // fire-and-forget - see its own comment for why this isn't awaited
     return { ok: true, text: displayText };
   } catch (error) {
     console.error(error);
@@ -3395,6 +4318,7 @@ function resetKey() {
   connected = false;
   chatHistory.length = 0;
   saveApiHistory();
+  clearConversationSummary();
   keyInput.value = "";
   localStorage.removeItem(LS.API_KEY);
   refreshKeyStatusUI();
@@ -3410,6 +4334,7 @@ function startNewChat() {
   if (isBothMode()) { bothClearTranscript(); return; }
   chatHistory.length = 0;
   saveApiHistory();
+  clearConversationSummary();
   chatLogData.length = 0;
   chatLoadedStart = 0;
   localStorage.removeItem(LS.CHAT_LOG);
