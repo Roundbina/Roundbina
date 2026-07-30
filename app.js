@@ -49,6 +49,11 @@ const LS_GLOBAL = {
   GOOGLE_API_KEY:   "roundbina_googleApiKey",
   GOOGLE_MODEL:     "roundbina_googleModel", // e.g. "gemma-4-31b-it" or "gemma-4-26b-a4b-it"
 
+  // Tiny built-in sound effects (see the "Sound effects" section further
+  // down) - defaults on; this key only ever gets written once someone
+  // actually flips the settings toggle.
+  SOUND_ENABLED:    "roundbina_soundEnabled",
+
   // ---- Advanced sampling params - blank/unset means "don't send this
   // field at all", so a person who never touches these gets identical
   // behavior to before (temperature 0.8, nothing else specified). ----
@@ -76,20 +81,28 @@ const LS_PER_CHARACTER_BASE = {
   HIDDEN_AT:    "hiddenAt",    // when the app was last backgrounded
   LAST_MESSAGE_AT: "lastMessageAt", // real-world time of the last completed exchange - lets the model feel actual elapsed time
   LAST_FED:     "lastFed",     // timestamp of last feeding
+  LAST_SHOWERED:"lastShowered",// timestamp of last shower - cleanliness decays off this the same way hunger decays off LAST_FED
   IS_DEAD:      "isDead",      // "true" once she's gone unfed too long
   DIED_AT:      "diedAt",      // timestamp of death, for flavor/records
   HUNGER:       "hunger",      // 0 (full) .. 100 (starving)
 
-  // AI-narrated status bars: unlike LS.HUNGER above (a passive real-time
-  // timer), these values are set by the character's own replies - the
-  // model reports how full/clean it feels via a hidden tag in each
-  // response (see STATUS_TAG_RE / parseAndApplyStatusTag below), so
-  // feeding, showering, or simply chatting about being grubby all
-  // naturally move the bars instead of a fixed formula.
-  STATUS_HUNGER: "statusHunger", // 0 (starving) .. 100 (full)
-  STATUS_CLEAN:  "statusClean",  // 0 (filthy) .. 100 (spotless)
+  // Hunger and cleanliness bars: purely real-elapsed-time decay off
+  // LAST_FED/LAST_SHOWERED above (see computeHunger()/computeCleanliness()
+  // near STATUS_HUNGER below) - never asked of the model at all. Affection
+  // and mood are still tracked here, but are now derived locally from the
+  // PERSON's own message text (see scoreMessageMood() further down)
+  // instead of a hidden tag the model has to self-report every turn. This
+  // used to all ride on one fragile {{STATUS ...}} tag the model had to
+  // emit, in the exact format, on literally every single reply - which is
+  // exactly what "frozen bars" meant: one missed/malformed tag (more
+  // common than it should be, especially on weaker or heavily-constrained
+  // models) and everything downstream just silently stopped moving. None
+  // of the fields below can freeze that way anymore, since none of them
+  // wait on the model to say anything at all.
+  STATUS_HUNGER: "statusHunger", // no longer read/written - kept only so an old save doesn't throw on a stale key
+  STATUS_CLEAN:  "statusClean",  // no longer read/written - kept only so an old save doesn't throw on a stale key
   STATUS_AFFECTION: "statusAffection", // 0 (hurt/withdrawn) .. 100 (adoring) - tracks how she's been treated
-  STATUS_MOOD:   "statusMood",   // free-text mood word from the model
+  STATUS_MOOD:   "statusMood",   // free-text mood word, now chosen locally rather than reported by the model
   USER_THEME:    "userTheme",    // manual theme pick ("auto" or a THEME_PRESETS key), per character
 
   // Rolling conversation summary (see "Conversation summarization" section
@@ -169,17 +182,12 @@ function trimHistoryToContextBudget(history) {
 }
 
 // ---- Conversation summarization -------------------------------------------
-// Sending the ENTIRE raw chatHistory back to the model forever has two
-// problems as a conversation grows: it eventually blows the context budget
-// (trimHistoryToContextBudget just silently drops the oldest turns once
-// that happens - total, not graceful, forgetting), and every one of her own
-// past {{STATUS ... mood=...}} tags sits there verbatim, which is exactly
-// what causes her to anchor on repeating the same mood word turn after
-// turn instead of genuinely re-evaluating it (see MOOD_REMINDER above).
+// Sending the ENTIRE raw chatHistory back to the model forever eventually
+// blows the context budget (trimHistoryToContextBudget just silently drops
+// the oldest turns once that happens - total, not graceful, forgetting).
 //
 // The fix: once there's a big enough uncondensed chunk sitting behind the
-// most recent turns, fold it into a short rolling prose summary (no tags,
-// no repeated literal mood words to latch onto) and send THAT instead of
+// most recent turns, fold it into a short rolling prose summary and send THAT instead of
 // the raw chunk - while always still sending the most recent turns
 // verbatim, so nothing about the live back-and-forth loses detail.
 const SUMMARY_TRIGGER_MESSAGES = 20; // fold in a fresh chunk once this many raw entries have piled up unsummarized
@@ -303,6 +311,7 @@ let selectedModel = localStorage.getItem(LS.MODEL) || DEFAULT_MODEL_NAME;
 let fallbackEnabled = localStorage.getItem(LS.FALLBACK_ENABLED) === "true";
 let googleApiKey = localStorage.getItem(LS.GOOGLE_API_KEY) || "";
 let googleModel = localStorage.getItem(LS.GOOGLE_MODEL) || "gemma-4-31b-it";
+let soundEnabled = localStorage.getItem(LS.SOUND_ENABLED) !== "false"; // on by default
 // ---- Advanced sampling params (blank = provider default, field omitted
 // from the request entirely) ----
 let temperature = localStorage.getItem(LS.TEMPERATURE) || "0.8";
@@ -451,55 +460,13 @@ function checkAffectionTierUpgrade() {
 // the one specific request that actually needs it - see confirmKill().
 let needsKillInstructionThisTurn = false;
 
-// Direct, explicit nudge to actually re-evaluate mood every turn rather
-// than defaulting to whatever it said last - weaker models especially
-// tend to let this go stale unless told plainly, every single time, to
-// actually check it against the current conversation.
-const MOOD_REMINDER = "\n\n[System note: actively re-evaluate and update your mood to genuinely match how THIS specific conversation has been going so far - don't let it go stale or default to whatever you said last turn. You will see your own past {{STATUS ... mood=...}} tags sitting in the conversation above - seeing the same word repeated there is NOT evidence it's still true, it just means you haven't re-checked it. Ignore that pattern and re-derive the mood fresh from what has actually happened in the last few messages, even if that means it's identical to last time or a big jump from it.]";
-
-// ---- Per-character mood overrides -----------------------------------------
-// The shared STATUS_INSTRUCTION/MOOD_REMINDER above are enough for a
-// character whose personality already wears her feelings openly (Bina).
-// Characters whose personality is built around NOT visibly reacting (Rone's
-// denial, Ecchino's composure) give weaker models an easy excuse to just let
-// the hidden {{STATUS ... mood=...}} field go stale too - "she's calm, so
-// mood=calm forever" - even though the mood tag is meant to be her honest
-// INTERNAL state, not a transcript of what she lets show on the surface.
-// Each entry here is an extra, character-specific instruction stacked on
-// top of the shared ones, spelling out explicitly that outward control is
-// not the same thing as an unchanging inner state. Empty string = no extra
-// instruction needed. Keyed by character id so adding a future roundie who
-// needs the same treatment is just adding her own entry here.
-const MOOD_OVERRIDES = {
-  bina: "",
-  rone: `
-
----
-STRICT MOOD RULE FOR RONE: your tsundere DENIAL is dialogue, not data. You
-might insist "I'm not blushing" or "I don't care" in your spoken lines while
-your hidden mood field still honestly reports "shy" or "fond" underneath -
-the two are allowed to (and usually should) disagree. Never let the mood
-field just default to a guarded/neutral word because your dialogue stayed
-prickly on the surface; it must keep tracking your REAL reaction turn to
-turn, even when your words are busy denying it.`,
-  ecchino: `
-
----
-STRICT MOOD RULE FOR ECCHINO: your composure is a performance, not a
-description of your hidden mood field. Because you rarely raise your voice
-or change expression, it is easy to lazily report the same neutral word
-("calm", "composed", "content") every single turn regardless of what's
-actually happening in the conversation - this is WRONG and you must not do
-it. The hidden mood field tracks your genuine internal state, which keeps
-moving even while your outward behavior stays controlled: kindness can move
-it toward something like content, fond, or quietly pleased; disrespect or
-cruelty toward someone you protect can move it toward cold, displeased, or
-even a controlled fury; being ignored can move it toward distant or guarded;
-being genuinely touched can move it toward a rare warmth. Let your DIALOGUE
-stay composed and understated as always, but the mood word underneath it
-must keep honestly shifting with events - never let it go two turns in a row
-without re-checking whether it's actually still true.`
-};
+// (Mood used to need a "re-evaluate every turn" reminder here, plus
+// per-character overrides below for Rone/Ecchino specifically, because it
+// was the model's job to self-report it via the hidden tag. Now that mood/
+// affection are derived locally from the person's own message text (see
+// scoreMessageMood() further down), none of that nudging is needed
+// anymore - it updates itself, every message, with zero chance of going
+// stale from the model just not mentioning it.)
 
 // Format every reply like this worked example (a real name, not the
 // literal placeholder) - avoids reinforcing the earlier bug where a model
@@ -528,13 +495,6 @@ function getSystemPrompt() {
   const tier = getAffectionTier(characterStatus.affection);
   const tierNote = `\n\n---\nYour current relationship tier with them is "${tier.label}" (affection ${characterStatus.affection}/100). ${tier.note} Let this genuinely color how you speak to them - don't announce the tier itself, just let it shape your tone.`;
   const killPart = needsKillInstructionThisTurn ? KILL_INSTRUCTION : "";
-  const moodOverride = MOOD_OVERRIDES[char.id] || "";
-  // If the last reply (or two) came back with no {{STATUS}} tag at all,
-  // add one more unmissable line on top of the full instruction - see
-  // getStatusMissStreak() for why.
-  const missNudge = getStatusMissStreak() >= 2
-    ? "\n\n[System note: your last reply was missing the required {{STATUS ...}} tag. This is mandatory - include it, in the exact format described above, at the very end of this reply without fail.]"
-    : "";
   // Separate from the personality prompt above (which the "custom
   // personality prompt" field fully replaces) - this is steering aimed at
   // the MODEL rather than the CHARACTER, so it always gets tacked on
@@ -542,7 +502,7 @@ function getSystemPrompt() {
   const steeringPart = modelSteeringNotes.trim()
     ? `\n\n---\n[Model-specific instructions - follow these strictly, they exist because this particular model needs the extra nudge:]\n${modelSteeringNotes.trim()}`
     : "";
-  return base + tierNote + killPart + buildStatusInstruction(char) + moodOverride + MOOD_REMINDER + missNudge + FORMAT_INSTRUCTION + EFFECT_INSTRUCTION + steeringPart;
+  return base + tierNote + killPart + buildStatusInstruction(char) + FORMAT_INSTRUCTION + EFFECT_INSTRUCTION + steeringPart;
 }
 
 // ---- AI-narrated status bars (hunger / cleanliness / affection) ----------
@@ -571,79 +531,163 @@ function getCharStats(char) {
   return (char && char.stats) || DEFAULT_STATS;
 }
 
-// Builds the same hidden-tag instruction block STATUS_INSTRUCTION used to
-// be a fixed string for - now generated per-character so a companion whose
-// bar1 is called "blood" instead of "hunger" gets told to track and report
-// blood, not hunger, and the model is never asked to pretend one means the
-// other.
+// Used to build a hidden-tag instruction asking the model to self-report
+// hunger/cleanliness/mood every single reply - that's exactly what caused
+// the "frozen bars" problem (see the LS_PER_CHARACTER_BASE comment above):
+// a weaker model, or even a stronger one under strict low-temperature
+// constraints, would periodically skip or malform the tag, and everything
+// downstream just silently stopped moving. Hunger/cleanliness are now pure
+// real-elapsed-time decay (computeHunger()/computeCleanliness() below) and
+// mood/affection are derived locally from the person's own message text
+// (scoreMessageMood() below) - none of that needs the model's help anymore.
+//
+// The ONE thing still worth asking the model for is a custom Roundie's
+// "extra" bars (bar3+) beyond the built-in two slots, since those are
+// free-form and named by whoever built her (e.g. a vampire Roundie's
+// "blood") - there's no local formula that could guess what those mean or
+// what should move them. This only produces a tag request at all if a
+// character actually HAS extra bars defined; Bina/Rone/Ecchino don't, so
+// for them this returns an empty string and no tag is requested at all.
 function buildStatusInstruction(char) {
   const stats = getCharStats(char);
-  const bars = [stats.bar1, stats.bar2, ...(stats.extra || [])];
-  const barLines = bars.map(b =>
+  const extra = stats.extra || [];
+  if (!extra.length) return "";
+
+  const barLines = extra.map(b =>
     `- ${b.key}: a number 0-100 (100 = full ${b.label.toLowerCase()}). Drifts down slowly ` +
     `on its own as messages go by (${b.dropsFrom || "time passing"}), and rises when ` +
     `${b.risesFrom || "attended to"}.`
   ).join("\n");
-  const tagExample = bars.map(b => `${b.key}=${b.key === bars[0].key ? 72 : 88}`).join(" ") + " mood=happy";
+  const tagExample = extra.map(b => `${b.key}=80`).join(" ");
 
   return `
 
 ---
-You must track ${bars.length === 1 ? "one hidden number" : bars.length + " hidden numbers"} and one mood word, and
-report them at the end of EVERY single reply without exception - even a
-short or one-word reply.
+This character also tracks ${extra.length === 1 ? "one extra hidden number" : extra.length + " extra hidden numbers"} beyond
+the normal hunger/cleanliness/mood the app already tracks on its own -
+report ${extra.length === 1 ? "it" : "them"} at the end of EVERY single reply, even a short one:
 
 ${barLines}
-IMPORTANT: every one of these numbers must carry over from what you
-reported last turn, only drifting a small, realistic amount - they are
-NEVER supposed to jump up or down because of mood, emotion, or how the
-conversation is going. Only real events change them. An angry or sad
-reply does NOT mean a bar suddenly dropped - keep them stable and
-continuous regardless of emotional tone.
-- mood: ONE lowercase word for your current emotional state, e.g. happy,
-  content, playful, shy, sleepy, hopeful, worried, sad, hurt, lonely, grumpy,
-  indignant, angry, cold, scared, hysterical, dazed, adoring, gone. Let how
-  the person has been treating you shape this: warmth/compliments/
-  playfulness push it toward a fonder word; cruelty/cursing at you/coldness
-  push it toward a hurt or guarded word; ordinary neutral chatting should
-  stay near a calm/content word rather than swinging wildly.
+IMPORTANT: this number must carry over from what you reported last turn,
+only drifting a small, realistic amount - only real events change it, not
+mood or conversational tone.
 
-Let your tone and body language actually reflect these bars and this mood.
-
-REQUIRED FORMAT - on its own line, at the very end of every single reply,
-formatted EXACTLY like this worked example (numbers only, no % sign, no
-quotes, all fields present, always in this exact order):
+REQUIRED FORMAT - on its own line, at the very end of every single reply:
 {{STATUS ${tagExample}}}
 
 This tag is stripped out before the person ever sees it - never mention it,
 explain it, or break character to talk about it, and never skip it.`;
 }
 
-// Self-healing nudge for the exact "bars get stuck" problem: if a reply
-// comes back with no valid {{STATUS}} tag at all, parseAndApplyStatusTag
-// (below) bumps this streak instead of silently doing nothing. Once it
-// hits 2 misses in a row, getSystemPrompt() injects an extra, impossible-
-// to-miss line into the very next request - most models that were just
-// forgetting the tag (rather than not knowing the format) self-correct
-// within a message or two of this.
-function getStatusMissStreak() {
-  return parseInt(localStorage.getItem(charKey("statusMissStreak")), 10) || 0;
+// ---- Hunger & cleanliness: pure elapsed-time decay -----------------------
+// Both bars are 100% derived from a timestamp (LAST_FED / LAST_SHOWERED) -
+// there's no stored "current value" to drift out of sync or freeze; every
+// read just asks "how long has it actually been?" fresh. *_DECAY_MS is how
+// long a full meter takes to hit zero if never attended to again.
+const HUNGER_DECAY_MS = HUNGER_MAX * HUNGER_RATE_MS; // 100 * 10min = ~16.7h, same pace the app always used
+const CLEAN_RATE_MS = 18 * 60 * 1000;                // getting grubby is a bit slower than getting hungry
+const CLEAN_DECAY_MS = 100 * CLEAN_RATE_MS;          // ~30h to fully grimy
+
+function computeHunger(lastFedRaw) {
+  if (!lastFedRaw) return 100;
+  const elapsed = Date.now() - parseInt(lastFedRaw, 10);
+  return clamp0to100(100 - Math.floor((elapsed / HUNGER_DECAY_MS) * 100));
 }
-function setStatusMissStreak(n) {
-  localStorage.setItem(charKey("statusMissStreak"), String(n));
+function computeCleanliness(lastShoweredRaw) {
+  if (!lastShoweredRaw) return 100;
+  const elapsed = Date.now() - parseInt(lastShoweredRaw, 10);
+  return clamp0to100(100 - Math.floor((elapsed / CLEAN_DECAY_MS) * 100));
+}
+
+// Backdates a timestamp so computeHunger()/computeCleanliness() reads out
+// to approximately `targetValue` right now, instead of full (100). Used
+// by revival, which wants her to come back weak rather than instantly at
+// full - see confirmRevive() below.
+function backdateForValue(decayMs, targetValue) {
+  return Date.now() - Math.round((1 - clamp0to100(targetValue) / 100) * decayMs);
+}
+
+// ---- Mood & affection: derived locally from what's actually said --------
+// This replaces asking the model to self-report mood/affection via the
+// same hidden tag hunger/cleanliness used to ride on - the exact mechanism
+// that kept freezing. Instead, the PERSON's own outgoing message is scanned
+// for affection-relevant language the instant it's sent (see
+// applyLocalMoodSignal()), entirely client-side - no API call, no tag, no
+// chance of the model just not mentioning it. Reuses the app's existing
+// MOOD_LEVEL vocabulary so a locally-picked mood behaves identically to one
+// the model used to report (same emoji, same portrait expression, same
+// affection-tier math).
+//
+// This is deliberately simple pattern matching, not a real sentiment
+// model - it doesn't need to be subtle, just consistently directionally
+// right, and (critically) it can never silently fail to update the way a
+// missing tag could. An ordinary neutral message that matches nothing
+// simply leaves mood/affection exactly where they were - which is the
+// correct behavior, not a bug (real feelings don't swing on every line).
+const MOOD_SIGNAL_PATTERNS = [
+  // [pattern, mood word, affection delta] - checked in order, first match
+  // wins, so the strongest/most specific signals are listed first.
+  [/\bi\s*love\s*(you|u)\b|\blove\s*(you|u)\s*(so much|forever|always)?\b|\badore\s*(you|u)\b|\bmy\s*(love|darling|sweetheart)\b/i, "adoring", 6],
+  [/\bgood\s*girl\b|\bso\s*proud\s*of\s*you\b|\byou'?re\s*amazing\b|\bmissed\s*(you|u)\b/i, "loving", 5],
+  [/\bthank\s*you\b|\bthanks\b|\bappreciate\s*(you|it)\b|\bso\s*(sweet|cute)\b|\byou'?re\s*the\s*best\b/i, "happy", 3],
+  [/\blol\b|\blmao\b|\bhaha+\b|\bhehe+\b|:3|xd\b/i, "playful", 2],
+  [/\bgood\s*morning\b|\bgood\s*night\b|\bsleep\s*well\b|\bsweet\s*dreams\b/i, "content", 2],
+  [/\bwhatever\b|\bmeh\b|\bboring\b|\bi\s*don'?t\s*care\b/i, "grumpy", -3],
+  [/\bstop\s*it\b|\bshut\s*up\b|\bgo\s*away\b|\bleave\s*me\s*alone\b/i, "hurt", -5],
+  [/\bi\s*hate\s*(you|u)\b|\byou'?re\s*(stupid|worthless|useless|annoying|ugly)\b|\bfuck\s*(you|off)\b/i, "hurt", -8]
+];
+
+function scoreMessageMood(text) {
+  if (!text) return null;
+  const clean = text.toLowerCase();
+  for (const [pattern, mood, delta] of MOOD_SIGNAL_PATTERNS) {
+    if (pattern.test(clean)) return { mood, delta };
+  }
+  return null; // no clear signal in this message - leave mood/affection alone
+}
+
+// Applies a fresh message's sentiment signal (if any) to a status object in
+// place. Called the instant the PERSON's message is added to a chat -
+// solo (handleChatSend) or Roundgroup (addBothMsg) - so the meter reacts
+// immediately, even before her reply comes back (or even if the API call
+// fails entirely).
+function applyLocalMoodSignal(status, text) {
+  const signal = scoreMessageMood(text);
+  if (!signal) return status;
+  status.affection = clamp0to100(status.affection + signal.delta);
+  status.mood = signal.mood;
+  return status;
+}
+
+// A very slow pull back toward a calm baseline the longer it's actually
+// been since the last message (using each character's own LAST_MESSAGE_AT
+// timestamp) - roughly 1 point per hour, capped at 24 hours' worth so a
+// long absence settles her rather than erasing a relationship's progress
+// in one sitting. Keeps a bad exchange from freezing her at "furious"
+// forever with nothing to walk it back except another message.
+function applyPassiveMoodDrift(status, lastMessageAtRaw) {
+  const lastMessageAt = lastMessageAtRaw ? parseInt(lastMessageAtRaw, 10) : null;
+  if (!lastMessageAt) return status;
+  const hoursSince = (Date.now() - lastMessageAt) / 3600000;
+  if (hoursSince < 1) return status;
+  const baseline = 60;
+  const pull = Math.min(hoursSince, 24);
+  const gap = Math.abs(status.affection - baseline);
+  const dir = status.affection > baseline ? -1 : status.affection < baseline ? 1 : 0;
+  status.affection = clamp0to100(status.affection + dir * Math.min(pull, gap));
+  return status;
 }
 
 function loadCharacterStatus() {
-  const hunger = parseInt(localStorage.getItem(LS.STATUS_HUNGER), 10);
-  const clean = parseInt(localStorage.getItem(LS.STATUS_CLEAN), 10);
   const affection = parseInt(localStorage.getItem(LS.STATUS_AFFECTION), 10);
   const mood = localStorage.getItem(LS.STATUS_MOOD);
-  return {
-    hunger: Number.isFinite(hunger) ? hunger : 80,
-    cleanliness: Number.isFinite(clean) ? clean : 100,
+  const status = {
+    hunger: computeHunger(localStorage.getItem(LS.LAST_FED)),
+    cleanliness: computeCleanliness(localStorage.getItem(LS.LAST_SHOWERED)),
     affection: Number.isFinite(affection) ? affection : 65,
     mood: mood || "happy"
   };
+  return applyPassiveMoodDrift(status, localStorage.getItem(LS.LAST_MESSAGE_AT));
 }
 
 let characterStatus = loadCharacterStatus();
@@ -653,73 +697,37 @@ function clamp0to100(n) {
 }
 
 function saveCharacterStatus() {
-  localStorage.setItem(LS.STATUS_HUNGER, String(characterStatus.hunger));
-  localStorage.setItem(LS.STATUS_CLEAN, String(characterStatus.cleanliness));
+  // Hunger/cleanliness aren't saved here anymore - they're pure functions
+  // of LAST_FED/LAST_SHOWERED (see computeHunger()/computeCleanliness()
+  // above) and get recomputed fresh on every load, so there's nothing
+  // meaningful to persist for them.
   localStorage.setItem(LS.STATUS_AFFECTION, String(characterStatus.affection));
   localStorage.setItem(LS.STATUS_MOOD, characterStatus.mood);
 }
 
-// Strips the hidden {{STATUS ...}} tag off the end of a model reply, applies
-// it to characterStatus/the bars, and returns the cleaned-up display text.
-// If the tag is missing or malformed, the text passes through untouched,
-// the bars keep their last known values, AND the miss-streak counter goes
-// up - see getStatusMissStreak() above for what that then triggers.
-//
-// NOTE ON THE hunger/cleanliness PROPERTY NAMES BELOW: these are internal
-// "slot 1" / "slot 2" property names only at this point - they always hold
-// whatever bar1/bar2 actually are for the active character, whatever that
-// character calls them. A vampire Roundie whose bar1.key is "blood" still
-// has its value land in characterStatus.hunger internally; nothing outside
-// this function needs to know that, since renderStatusBars() reads the
-// icon/label from char.stats, not from the property name.
-//
-// Affection is not a separate number the model has to track and report -
-// it's derived from the SAME mood word that already reliably drives the
-// on-screen emoji (see MOOD_LEVEL below), so the bar and the face can't
-// drift apart.
+// Strips a trailing {{STATUS ...}} tag off a model reply if one shows up,
+// and applies it ONLY to a character's optional "extra" bars (bar3+,
+// custom per-Roundie stats a local formula couldn't guess the meaning of -
+// see buildStatusInstruction() above). Built-in hunger/cleanliness/mood/
+// affection are no longer read from this tag at all - they're handled
+// locally now (computeHunger()/computeCleanliness()/scoreMessageMood()) -
+// so for Bina/Rone/Ecchino (no extra bars) this function only ever strips
+// stray tag text a model might produce out of habit; it doesn't need one
+// to be present, and nothing freezes if it's missing or malformed.
 function parseAndApplyStatusTag(text) {
   const match = text.match(STATUS_TAG_RE);
-  if (!match) {
-    setStatusMissStreak(getStatusMissStreak() + 1);
-    return text;
-  }
-  setStatusMissStreak(0);
+  if (!match) return text;
 
-  const body = match[1];
   const stats = getCharStats(getCharacter());
-  const bar1Match = body.match(new RegExp(`${stats.bar1.key}\\s*=\\s*(-?\\d+)`, "i"));
-  const bar2Match = body.match(new RegExp(`${stats.bar2.key}\\w*\\s*=\\s*(-?\\d+)`, "i"));
-  const moodMatch = body.match(/mood\s*=\s*([A-Za-z][\w-]*)/i);
-
-  if (bar1Match) characterStatus.hunger = clamp0to100(parseInt(bar1Match[1], 10));
-  if (bar2Match) characterStatus.cleanliness = clamp0to100(parseInt(bar2Match[1], 10));
-
-  // Optional extra bars (bar3+) beyond the two built-in slots - stored in
-  // characterStatus.extra keyed by their own name, since there's no fixed
-  // property for these the way hunger/cleanliness are.
   if (stats.extra && stats.extra.length) {
+    const body = match[1];
     characterStatus.extra = characterStatus.extra || {};
     stats.extra.forEach(b => {
       const m = body.match(new RegExp(`${b.key}\\s*=\\s*(-?\\d+)`, "i"));
       if (m) characterStatus.extra[b.key] = clamp0to100(parseInt(m[1], 10));
     });
+    renderStatusBars();
   }
-
-  if (moodMatch) {
-    characterStatus.mood = moodMatch[1];
-    // resolveMoodKey handles exact hits, common suffixes ("radiantly"), and
-    // a keyword fallback for close synonyms, so most words the model picks
-    // land on a sensible affection value instead of silently stalling.
-    const key = resolveMoodKey(moodMatch[1]);
-    if (key !== null) {
-      characterStatus.affection = MOOD_LEVEL[key];
-    }
-    // only a truly unrecognizable word falls through to holding the last
-    // value instead of resetting - no jarring jump for total gibberish.
-  }
-
-  saveCharacterStatus();
-  renderStatusBars();
 
   return text.slice(0, match.index).trim();
 }
@@ -1341,6 +1349,7 @@ function switchCharacter(id) {
   if (!CHARACTERS[id]) return;
   if (id === activeCharacterId) { renderCharacterSwitcher(); return; }
 
+  sfxSwitch();
   if (activeCharacterId === "both") leaveBothMode();
 
   activeCharacterId = id;
@@ -1558,6 +1567,93 @@ async function openRoundieGallery() {
   } catch (e) {
     grid.innerHTML = `<div class="galleryLoading">Couldn't reach the gallery list right now.</div>`;
   }
+}
+
+// ---- Roundgroup character selector -------------------------------------
+// The "who's in the room" screen for Roundgroup. Deliberately reuses the
+// gallery's card-grid look but as its own full screen (see .groupSelectModal/
+// .groupSelectPanel in style.css) rather than a cramped panel, since picking
+// 2+ out of a growing roster of Roundies deserves the room. Every id in
+// CHARACTERS shows up as a candidate - the three built-ins plus any gallery
+// Roundie already adopted this session - and the full community index gets
+// pulled in too so a Roundie nobody's opened yet this session still appears
+// as an option, not just whoever happens to already be registered.
+let groupSelectPending = new Set();
+
+async function openGroupSelector() {
+  const modal = document.getElementById("groupSelectModal");
+  const grid = document.getElementById("groupSelectGrid");
+  if (!modal || !grid) return;
+  modal.style.display = "flex";
+  grid.innerHTML = `<div class="galleryLoading">Loading Roundies…</div>`;
+
+  try {
+    if (!galleryIndexCache) {
+      const res = await fetch("roundies/index.json");
+      galleryIndexCache = res.ok ? await res.json() : [];
+    }
+    // Best-effort - a Roundie whose config fails to load just won't show
+    // up as a candidate here, same as everywhere else that reads this list.
+    await Promise.all(galleryIndexCache.map(id => registerGalleryRoundie(id).catch(() => null)));
+  } catch (e) { /* fine - the already-registered ones still render below */ }
+
+  groupSelectPending = new Set(getBothParticipants());
+  renderGroupSelectGrid();
+}
+
+function renderGroupSelectGrid() {
+  const grid = document.getElementById("groupSelectGrid");
+  if (!grid) return;
+  grid.innerHTML = "";
+  Object.keys(CHARACTERS).forEach(id => {
+    const char = CHARACTERS[id];
+    const selected = groupSelectPending.has(id);
+    const thumb = char.portraits && (char.portraits.eyesOpen || char.portraits.eyesClosed);
+    const card = document.createElement("button");
+    card.type = "button";
+    card.className = "groupSelectCard" + (selected ? " selected" : "");
+    card.onclick = () => toggleGroupSelectCard(id);
+    card.innerHTML = `
+      <div class="groupSelectCheck">${selected ? "✓" : ""}</div>
+      <div class="groupSelectThumb">${thumb ? `<img src="${thumb}" alt="">` : char.emoji}</div>
+      <div class="groupSelectName">${char.emoji} ${char.name}</div>
+      <div class="groupSelectSub">${char.subtitle || ""}</div>`;
+    grid.appendChild(card);
+  });
+  if (!grid.children.length) {
+    grid.innerHTML = `<div class="galleryLoading">No Roundies to pick from yet.</div>`;
+  }
+  updateGroupSelectFooter();
+}
+
+function toggleGroupSelectCard(id) {
+  if (groupSelectPending.has(id)) groupSelectPending.delete(id);
+  else groupSelectPending.add(id);
+  sfxTick();
+  renderGroupSelectGrid();
+}
+
+function updateGroupSelectFooter() {
+  const count = groupSelectPending.size;
+  const countEl = document.getElementById("groupSelectCount");
+  const confirmBtn = document.getElementById("groupSelectConfirmBtn");
+  if (countEl) countEl.textContent = count < 2 ? "Pick at least 2" : `${count} picked`;
+  if (confirmBtn) confirmBtn.disabled = count < 2;
+}
+
+function closeGroupSelector() {
+  const modal = document.getElementById("groupSelectModal");
+  if (modal) modal.style.display = "none";
+}
+
+function confirmGroupSelection() {
+  if (groupSelectPending.size < 2) return;
+  const ids = Array.from(groupSelectPending);
+  ids.forEach(id => ensureCharTabExists(id)); // anyone picked here also becomes a real solo tab, if she wasn't one already
+  setBothParticipants(ids);
+  closeGroupSelector();
+  sfxGroupEnter();
+  enterBothMode();
 }
 
 // ---- Roundie Workshop (in-app builder) -------------------------------
@@ -1857,18 +1953,133 @@ async function exportBuilderRoundie() {
   statusEl.textContent = `${name}.zip is ready in your downloads — send it over to get adopted into everyone's gallery! 🎀`;
 }
 
-// ---- Roundboth: Bina & Rone share a room --------------------------------
+// ---- Sound effects (tiny, procedural - no audio files needed) -----------
+// A small built-in chime kit generated on the fly with the Web Audio API
+// instead of shipping real audio clips - keeps the app a single
+// zero-asset-audio bundle, works fully offline, and needs no licensing
+// decisions. Every sound is just a short oscillator plus a fast volume
+// envelope (quick linear attack, exponential decay - never an abrupt
+// on/off click). The AudioContext is created lazily on first actual use
+// rather than at boot, since most browsers won't let a page create/run
+// one before a real user gesture (a tap) anyway - and someone who leaves
+// sound off never pays even that cost.
+let audioCtx = null;
+function getAudioCtx() {
+  if (!soundEnabled) return null;
+  if (!audioCtx) {
+    try { audioCtx = new (window.AudioContext || window.webkitAudioContext)(); }
+    catch (e) { return null; } // unsupported browser - sound quietly does nothing
+  }
+  if (audioCtx.state === "suspended") audioCtx.resume().catch(() => {});
+  return audioCtx;
+}
+
+// One short tone. `delay` schedules it to start slightly after "now"
+// (relative to the AudioContext's own clock, not a real setTimeout), which
+// is what lets a two/three-note chime be expressed as a couple of calls to
+// this same helper instead of separate timer plumbing per sound.
+function playTone(freq, opts = {}) {
+  const ctx = getAudioCtx();
+  if (!ctx) return;
+  const { duration = 0.16, type = "sine", gain = 0.045, delay = 0 } = opts;
+  const t0 = ctx.currentTime + delay;
+  const osc = ctx.createOscillator();
+  const amp = ctx.createGain();
+  osc.type = type;
+  osc.frequency.setValueAtTime(freq, t0);
+  amp.gain.setValueAtTime(0, t0);
+  amp.gain.linearRampToValueAtTime(gain, t0 + 0.012);
+  amp.gain.exponentialRampToValueAtTime(0.0001, t0 + duration);
+  osc.connect(amp);
+  amp.connect(ctx.destination);
+  osc.start(t0);
+  osc.stop(t0 + duration + 0.03);
+}
+
+function sfxSend()       { playTone(720, { duration: 0.09, type: "sine", gain: 0.045 }); }
+function sfxReceive()    { playTone(520, { duration: 0.14, gain: 0.05 }); playTone(720, { duration: 0.16, gain: 0.04, delay: 0.05 }); }
+function sfxSwitch()     { playTone(440, { duration: 0.07, type: "triangle", gain: 0.04 }); playTone(600, { duration: 0.09, type: "triangle", gain: 0.04, delay: 0.045 }); }
+function sfxFeed()       { playTone(500, { duration: 0.1, gain: 0.05 }); playTone(760, { duration: 0.14, gain: 0.045, delay: 0.06 }); playTone(980, { duration: 0.18, gain: 0.04, delay: 0.12 }); }
+function sfxGift()       { playTone(660, { duration: 0.12, gain: 0.045 }); playTone(880, { duration: 0.14, gain: 0.04, delay: 0.06 }); playTone(1100, { duration: 0.2, gain: 0.035, delay: 0.12 }); }
+function sfxGroupEnter() { playTone(392, { duration: 0.16, type: "triangle", gain: 0.04 }); playTone(494, { duration: 0.16, type: "triangle", gain: 0.04, delay: 0.07 }); playTone(587, { duration: 0.22, type: "triangle", gain: 0.035, delay: 0.14 }); }
+function sfxTick()       { playTone(880, { duration: 0.045, type: "square", gain: 0.018 }); }
+function sfxError()      { playTone(220, { duration: 0.22, type: "sawtooth", gain: 0.04 }); }
+
+const soundEnabledCheckbox = document.getElementById("soundEnabledCheckbox");
+if (soundEnabledCheckbox) {
+  soundEnabledCheckbox.checked = soundEnabled;
+  soundEnabledCheckbox.addEventListener("change", () => {
+    soundEnabled = soundEnabledCheckbox.checked;
+    localStorage.setItem(LS.SOUND_ENABLED, String(soundEnabled));
+    if (soundEnabled) sfxTick(); // quick confirmation blip that it's actually back on
+  });
+}
+
+// ---- Collapsible companion panel ----------------------------------------
+// Lets the portrait/stat-bar/mood panel (or the whole Roundgroup roster)
+// tuck away with the caret handle right under the character tabs, so
+// longer messages get more room and the panel's own crossfades/status-bar
+// repaints aren't happening off-screen while it's hidden. One global
+// preference (not per-character) since it's really about screen layout,
+// not about any particular Roundie.
+const HEADER_COLLAPSED_KEY = "roundbina_headerCollapsed";
+let headerCollapsed = localStorage.getItem(HEADER_COLLAPSED_KEY) === "true";
+const headerCollapsible = document.getElementById("headerCollapsible");
+const headerCollapseBtn = document.getElementById("headerCollapseBtn");
+
+function applyHeaderCollapsed() {
+  if (headerCollapsible) headerCollapsible.classList.toggle("collapsed", headerCollapsed);
+  if (headerCollapseBtn) {
+    headerCollapseBtn.textContent = headerCollapsed ? "⌄" : "⌃";
+    const label = headerCollapsed ? "Show companion panel" : "Hide companion panel";
+    headerCollapseBtn.title = label;
+    headerCollapseBtn.setAttribute("aria-label", label);
+  }
+}
+function toggleHeaderCollapse() {
+  headerCollapsed = !headerCollapsed;
+  localStorage.setItem(HEADER_COLLAPSED_KEY, String(headerCollapsed));
+  sfxTick();
+  applyHeaderCollapsed();
+}
+applyHeaderCollapsed(); // reflect whatever was saved from last time, right away
+
+// ---- Roundboth: N Roundies share a room ---------------------------------
 // A third "mode" (activeCharacterId === "both") that sits alongside the
-// normal single-character chat instead of replacing it. Bina and Rone keep
-// their own real hunger/affection/mood - fed here through the exact same
-// hidden {{STATUS ...}} tag mechanism as their solo chats - so a
-// conversation in Roundboth genuinely affects (and is affected by) how
-// each of them is doing on their own tab. The two AI calls are made
-// independently, one per character, each seeing the shared transcript
-// from their own point of view (their own lines as "assistant", everyone
-// else's as "user"), which is what lets them actually address each other
-// instead of just monologuing past one another.
+// normal single-character chat instead of replacing it. Whoever's in the
+// current roster (see getBothParticipants() below - 2 or more, picked in
+// the group selector) keeps her own real hunger/affection/mood, fed here
+// through the exact same hidden {{STATUS ...}} tag mechanism as her solo
+// chat - so a conversation in Roundgroup genuinely affects (and is
+// affected by) how each of them is doing on her own tab. Each participant
+// gets her own independent AI call, seeing the shared transcript from her
+// own point of view (her own lines as "assistant", everyone else's as
+// "user"), which is what lets them actually address each other instead of
+// just monologuing past one another.
 function isBothMode() { return activeCharacterId === "both"; }
+
+// Roundgroup used to just mean "Bina + Rone", full stop - every function
+// below hardcoded that exact pair. It's now an actual roster: whichever
+// 2+ ids were last confirmed in the group selector (see openGroupSelector()
+// et al. further down), persisted so reopening Roundgroup remembers who
+// was in the room. Falls back to the original Bina+Rone pairing if nothing's
+// been picked yet, or if a saved id no longer resolves (e.g. a gallery
+// Roundie that hasn't been re-registered yet this session).
+const BOTH_PARTICIPANTS_KEY = "roundbina_both_participants";
+function getBothParticipants() {
+  let ids;
+  try { ids = JSON.parse(localStorage.getItem(BOTH_PARTICIPANTS_KEY) || "null"); }
+  catch (e) { ids = null; }
+  if (!Array.isArray(ids)) ids = null;
+  ids = (ids || []).filter(id => CHARACTERS[id]);
+  if (ids.length >= 2) return ids;
+  const fallback = ["bina", "rone"].filter(id => CHARACTERS[id]);
+  if (fallback.length >= 2) return fallback;
+  return Object.keys(CHARACTERS).slice(0, 2);
+}
+function setBothParticipants(ids) {
+  localStorage.setItem(BOTH_PARTICIPANTS_KEY, JSON.stringify(ids));
+}
 
 let bothTranscript = [];
 let bothBusy = false;
@@ -1884,47 +2095,47 @@ function bothStatusKey(id, base) {
 
 // Reads a character's real persisted status directly off its own
 // localStorage keys, independent of whichever character is "active" -
-// this is what lets Roundboth show Bina's and Rone's genuine, currently-
-// saved hunger/affection side by side without disturbing either one.
+// this is what lets Roundgroup show every participant's genuine,
+// currently-accurate hunger/affection side by side without disturbing any
+// of them. Hunger/cleanliness are computed fresh from her own LAST_FED/
+// LAST_SHOWERED timestamps (same formula as the solo path); affection/mood
+// are her own persisted values plus the same passive drift-toward-baseline
+// the solo path applies.
 function loadStatusForCharacterId(id) {
-  const hunger = parseInt(localStorage.getItem(bothStatusKey(id, "statusHunger")), 10);
-  const clean = parseInt(localStorage.getItem(bothStatusKey(id, "statusClean")), 10);
   const affection = parseInt(localStorage.getItem(bothStatusKey(id, "statusAffection")), 10);
   const mood = localStorage.getItem(bothStatusKey(id, "statusMood"));
-  return {
-    hunger: Number.isFinite(hunger) ? hunger : 80,
-    cleanliness: Number.isFinite(clean) ? clean : 100,
+  const status = {
+    hunger: computeHunger(localStorage.getItem(bothStatusKey(id, "lastFed"))),
+    cleanliness: computeCleanliness(localStorage.getItem(bothStatusKey(id, "lastShowered"))),
     affection: Number.isFinite(affection) ? affection : 65,
     mood: mood || "happy"
   };
+  return applyPassiveMoodDrift(status, localStorage.getItem(bothStatusKey(id, "lastMessageAt")));
 }
 
 function saveStatusForCharacterId(id, status) {
-  localStorage.setItem(bothStatusKey(id, "statusHunger"), String(status.hunger));
-  localStorage.setItem(bothStatusKey(id, "statusClean"), String(status.cleanliness));
+  // Hunger/cleanliness aren't saved - see the equivalent note on
+  // saveCharacterStatus() above; they're pure functions of her own
+  // LAST_FED/LAST_SHOWERED and get recomputed fresh every time.
   localStorage.setItem(bothStatusKey(id, "statusAffection"), String(status.affection));
   localStorage.setItem(bothStatusKey(id, "statusMood"), status.mood);
 }
 
-// Same parsing as parseAndApplyStatusTag(), but scoped to an explicit
-// status object instead of the single global `characterStatus` - so a
-// Roundboth turn updates only the character who actually spoke. `char` is
-// that character's CHARACTERS entry, so this reads whichever bar keys
-// they actually use instead of assuming hunger/cleanliness.
+// Strips a trailing {{STATUS ...}} tag if a model produces one out of
+// habit, applying it ONLY to optional extra bars (see the equivalent note
+// on parseAndApplyStatusTag() above) - built-in hunger/cleanliness/mood/
+// affection are handled locally and never read from this tag.
 function parseStatusTagForCharacter(text, status, char) {
   const match = text.match(STATUS_TAG_RE);
   if (!match) return text;
-  const body = match[1];
   const stats = getCharStats(char);
-  const bar1Match = body.match(new RegExp(`${stats.bar1.key}\\s*=\\s*(-?\\d+)`, "i"));
-  const bar2Match = body.match(new RegExp(`${stats.bar2.key}\\w*\\s*=\\s*(-?\\d+)`, "i"));
-  const moodMatch = body.match(/mood\s*=\s*([A-Za-z][\w-]*)/i);
-  if (bar1Match) status.hunger = clamp0to100(parseInt(bar1Match[1], 10));
-  if (bar2Match) status.cleanliness = clamp0to100(parseInt(bar2Match[1], 10));
-  if (moodMatch) {
-    status.mood = moodMatch[1];
-    const key = resolveMoodKey(moodMatch[1]);
-    if (key !== null) status.affection = MOOD_LEVEL[key];
+  if (stats.extra && stats.extra.length) {
+    const body = match[1];
+    status.extra = status.extra || {};
+    stats.extra.forEach(b => {
+      const m = body.match(new RegExp(`${b.key}\\s*=\\s*(-?\\d+)`, "i"));
+      if (m) status.extra[b.key] = clamp0to100(parseInt(m[1], 10));
+    });
   }
   return text.slice(0, match.index).trim();
 }
@@ -1942,30 +2153,68 @@ function pickPortraitForStatus(char, status) {
   return p.eyesOpen;
 }
 
-function renderBothPortraits() {
-  const binaImg = document.getElementById("miniBinaImg");
-  const roneImg = document.getElementById("miniRoneImg");
-  // PERF: same fix as renderPortraitImages() - skip re-assigning .src
-  // (and forcing a full base64 re-decode) when it's already correct.
-  // This is what made switching into Roundboth mode so heavy.
-  if (binaImg && CHARACTERS.bina) {
-    const src = pickPortraitForStatus(CHARACTERS.bina, loadStatusForCharacterId("bina"));
-    if (src && binaImg.src !== src) binaImg.src = src;
-  }
-  if (roneImg && CHARACTERS.rone) {
-    const src = pickPortraitForStatus(CHARACTERS.rone, loadStatusForCharacterId("rone"));
-    if (src && roneImg.src !== src) roneImg.src = src;
+// Rebuilds the row of mini-companion cards from scratch for whoever's
+// currently in getBothParticipants() - called once on entering Roundgroup
+// and again any time the roster is edited mid-conversation. The first two
+// participants keep the original left/right accent coloring (matching the
+// two-way split background below); anyone beyond that just uses the
+// default mini-card styling, since there's no third "side" to the room's
+// background split.
+function renderBothRoster() {
+  const row = document.getElementById("dualPortraitRow");
+  if (!row) return;
+  const participants = getBothParticipants();
+  row.innerHTML = "";
+  participants.forEach((id, i) => {
+    const char = CHARACTERS[id];
+    if (!char) return;
+    const el = document.createElement("div");
+    el.className = "miniCompanion";
+    el.id = `mini-${id}`;
+    const nameColorVar = i === 0 ? "var(--accent-light)" : i === 1 ? "var(--accent-light-r)" : "var(--accent-light)";
+    el.innerHTML = `
+      <div class="miniPortrait" id="mini-${id}-portrait"><img id="mini-${id}-img" alt="${char.name}" /></div>
+      <div class="miniName" style="color:${nameColorVar}">${char.emoji} ${char.name}</div>
+      <div class="miniBars">
+        <div class="miniBar hunger" title="${char.name}'s hunger"><div class="miniFill" id="mini-${id}-hunger"></div></div>
+        <div class="miniBar affection" title="${char.name}'s affection"><div class="miniFill" id="mini-${id}-affection"></div></div>
+        <div class="miniBar clean" title="${char.name}'s cleanliness"><div class="miniFill" id="mini-${id}-clean"></div></div>
+      </div>
+      <div class="miniMood" id="mini-${id}-mood">🙂 happy</div>`;
+    row.appendChild(el);
+  });
+
+  const subEl = document.getElementById("bothSubLine");
+  if (subEl) {
+    const names = participants.map(id => (CHARACTERS[id] ? CHARACTERS[id].name : id));
+    const namesList = names.length === 1 ? names[0]
+      : names.slice(0, -1).join(", ") + " & " + names[names.length - 1];
+    subEl.textContent = `${namesList}, together in one room`;
   }
 }
 
+function renderBothPortraits() {
+  // PERF: same fix as renderPortraitImages() - skip re-assigning .src
+  // (and forcing a full base64 re-decode) when it's already correct.
+  // This is what made switching into Roundboth mode so heavy.
+  getBothParticipants().forEach(id => {
+    const char = CHARACTERS[id];
+    const img = document.getElementById(`mini-${id}-img`);
+    if (!img || !char) return;
+    const src = pickPortraitForStatus(char, loadStatusForCharacterId(id));
+    if (src && img.src !== src) img.src = src;
+  });
+}
+
 function renderBothStatusBars() {
-  ["bina", "rone"].forEach(id => {
+  getBothParticipants().forEach(id => {
+    if (!CHARACTERS[id]) return;
     const status = loadStatusForCharacterId(id);
-    const hungerEl = document.getElementById(id === "bina" ? "miniBinaHunger" : "miniRoneHunger");
-    const affEl = document.getElementById(id === "bina" ? "miniBinaAffection" : "miniRoneAffection");
-    const cleanEl = document.getElementById(id === "bina" ? "miniBinaClean" : "miniRoneClean");
-    const moodEl = document.getElementById(id === "bina" ? "miniBinaMood" : "miniRoneMood");
-    const portraitEl = document.getElementById(id === "bina" ? "miniBinaPortrait" : "miniRonePortrait");
+    const hungerEl = document.getElementById(`mini-${id}-hunger`);
+    const affEl = document.getElementById(`mini-${id}-affection`);
+    const cleanEl = document.getElementById(`mini-${id}-clean`);
+    const moodEl = document.getElementById(`mini-${id}-mood`);
+    const portraitEl = document.getElementById(`mini-${id}-portrait`);
     if (hungerEl) hungerEl.style.transform = `scaleY(${status.hunger / 100})`;
     if (affEl) affEl.style.transform = `scaleY(${status.affection / 100})`;
     if (cleanEl) cleanEl.style.transform = `scaleY(${status.cleanliness / 100})`;
@@ -1975,13 +2224,13 @@ function renderBothStatusBars() {
       portraitEl.classList.toggle("affection-low", status.affection < 30);
     }
   });
-  applyBothModeTheme(); // re-check both moods; crossfades on its own if either shifted
+  applyBothModeTheme(); // re-check moods; crossfades on its own if any shifted
 }
 
 function bothDisplayName(speaker) {
-  if (speaker === "bina") return "Roundbina";
-  if (speaker === "rone") return "Roundrone";
-  return "You";
+  if (speaker === "user") return "You";
+  const char = CHARACTERS[speaker];
+  return char ? char.name : "You";
 }
 
 function saveBothTranscript() {
@@ -2000,7 +2249,8 @@ function addBothMsg(speaker, text, persist = true) {
   if (speaker !== "user") {
     const label = document.createElement("div");
     label.className = "bothSpeakerLabel";
-    label.textContent = speaker === "bina" ? "🍅 Roundbina" : "🗝️ Roundrone";
+    const speakerChar = CHARACTERS[speaker];
+    label.textContent = speakerChar ? `${speakerChar.emoji} ${speakerChar.name}` : speaker;
     div.appendChild(label);
   }
   const body = document.createElement("div");
@@ -2009,6 +2259,23 @@ function addBothMsg(speaker, text, persist = true) {
   chatContainer.appendChild(div);
   scrollChatToBottom();
   if (persist) {
+    // Only for a genuinely new turn, not the initial replay of stored
+    // history on entering the room - that would otherwise fire a chime
+    // storm for every past message all at once.
+    if (speaker === "user") sfxSend(); else sfxReceive();
+    if (speaker === "user") {
+      // Same local scan solo chat uses (see handleChatSend) - everyone
+      // currently in the room "hears" what was said, so each participant's
+      // own affection/mood updates off it independently. Runs instantly,
+      // before any of their replies come back.
+      getBothParticipants().forEach(id => {
+        const status = loadStatusForCharacterId(id);
+        applyLocalMoodSignal(status, text);
+        saveStatusForCharacterId(id, status);
+      });
+      renderBothPortraits();
+      renderBothStatusBars();
+    }
     bothTranscript.push({ speaker, text, t: Date.now() });
     saveBothTranscript();
     // Same sliding-window trim as solo mode - keeps the DOM bounded even
@@ -2032,7 +2299,9 @@ function restoreBothTranscript() {
   chatContainer.innerHTML = "";
   if (!bothTranscript.length) {
     bothLoadedStart = 0;
-    chatContainer.innerHTML = '<div class="msg system-msg">🍅🗝️ Roundbina and Roundrone are both here now. Tap ▶️ to let them start talking, or say something to kick things off.</div>';
+    const participants = getBothParticipants();
+    const roster = participants.map(id => (CHARACTERS[id] ? `${CHARACTERS[id].emoji} ${CHARACTERS[id].name}` : id)).join(", ");
+    chatContainer.innerHTML = `<div class="msg system-msg">${roster} are all here now. Tap ▶️ to let them start talking, or say something to kick things off.</div>`;
   } else {
     // BUG FIX: this used to rebuild the ENTIRE transcript as DOM every
     // single time Roundboth was entered, with no cap at all - the longer
@@ -2062,21 +2331,24 @@ function bothClearTranscript() {
 // voice apart from the person's).
 function buildBothMessagesFor(charId) {
   const char = CHARACTERS[charId];
-  const otherId = charId === "bina" ? "rone" : "bina";
-  const other = CHARACTERS[otherId];
+  const others = getBothParticipants().filter(id => id !== charId).map(id => CHARACTERS[id]).filter(Boolean);
+  const othersNames = others.map(o => o.name);
+  const namesList = othersNames.length <= 1
+    ? (othersNames[0] || "the others")
+    : othersNames.slice(0, -1).join(", ") + " and " + othersNames[othersNames.length - 1];
   const customPrompt = localStorage.getItem(bothStatusKey(charId, "systemPrompt"));
   const basePrompt = (customPrompt && customPrompt.trim()) ? customPrompt : char.defaultSystemPrompt;
   const groupNote = `
 
 ---
-Right now you are physically together in the same small room with ${other.name}
-AND a human companion - a live three-way conversation, not a private one-on-one
-chat. Speak only as yourself (${char.name}); never write ${other.name}'s dialogue,
-actions, or hidden status tag for her - only your own. Feel free to address
-${other.name} by name and react to what she just said, since she's right there
-with you. Keep each reply short (1-3 sentences) - this is a fast, natural
-back-and-forth, not a monologue.`;
-  const sysPrompt = basePrompt + groupNote + buildStatusInstruction(char) + (MOOD_OVERRIDES[charId] || "") + MOOD_REMINDER + FORMAT_INSTRUCTION;
+Right now you are physically together in the same small room with ${namesList}
+AND a human companion - a live group conversation, not a private one-on-one
+chat. Speak only as yourself (${char.name}); never write anyone else's dialogue,
+actions, or hidden status tag for them - only your own. Feel free to address
+${othersNames.length > 1 ? "any of them" : namesList} by name and react to what they just said,
+since they're right there with you. Keep each reply short (1-3 sentences) -
+this is a fast, natural back-and-forth, not a monologue.`;
+  const sysPrompt = basePrompt + groupNote + buildStatusInstruction(char) + FORMAT_INSTRUCTION;
 
   const messages = [{ role: "system", content: sysPrompt }];
   const recent = bothTranscript.slice(-24);
@@ -2088,7 +2360,7 @@ back-and-forth, not a monologue.`;
     }
   });
   if (!recent.length) {
-    messages.push({ role: "user", content: `[The room is quiet and ${other.name} is here too. Say something to start things off, in character.]` });
+    messages.push({ role: "user", content: `[The room is quiet and ${namesList} ${othersNames.length > 1 ? "are" : "is"} here too. Say something to start things off, in character.]` });
   }
   return messages;
 }
@@ -2230,6 +2502,7 @@ function triggerEffect(name, targetCharId) {
       break;
     case "gift":
       if (portrait) spawnSparkle(portrait, ["🎁", "💝", "✨"]);
+      sfxGift();
       bumpAffection(3);
       break;
     case "spooky":
@@ -2349,9 +2622,8 @@ petty/jealous/a little cutting, to hurt and quiet, to sweetly affectionate
 with a gift, entirely your own call. Keep it short (1-3 sentences), and don't
 write ${activeChar.name}'s reaction for her - only your own entrance.`;
 
-  const moodOverride = MOOD_OVERRIDES[intruderId] || "";
   const messages = [
-    { role: "system", content: basePrompt + interruptNote + buildStatusInstruction(intruder) + moodOverride + MOOD_REMINDER + FORMAT_INSTRUCTION + EFFECT_INSTRUCTION },
+    { role: "system", content: basePrompt + interruptNote + buildStatusInstruction(intruder) + FORMAT_INSTRUCTION + EFFECT_INSTRUCTION },
     { role: "user", content: `[Barge in on ${activeChar.name}'s conversation now.]` }
   ];
 
@@ -2505,12 +2777,18 @@ async function bothCharacterTurn(charId) {
   return true;
 }
 
-// Whoever didn't speak last goes next; if a person just spoke, Bina answers
-// first (arbitrary but consistent, rather than random).
+// Simple round robin across whoever's actually in the room: find the last
+// Roundie (not the person) to speak, and hand the turn to whoever's next
+// after them in the roster, wrapping back to the top. An empty room, or a
+// transcript where only the person has spoken so far, starts with the
+// first participant (arbitrary but consistent, rather than random).
 function bothNextSpeaker() {
-  if (!bothTranscript.length) return "bina";
-  const last = bothTranscript[bothTranscript.length - 1].speaker;
-  return last === "bina" ? "rone" : "bina";
+  const participants = getBothParticipants();
+  for (let i = bothTranscript.length - 1; i >= 0; i--) {
+    const idx = participants.indexOf(bothTranscript[i].speaker);
+    if (idx !== -1) return participants[(idx + 1) % participants.length];
+  }
+  return participants[0];
 }
 
 function setBothControlsDisabled(disabled) {
@@ -2585,8 +2863,10 @@ async function handleBothSend() {
   chatSendBtn.disabled = true;
   setBothControlsDisabled(true);
 
-  const binaOk = await bothCharacterTurn("bina");
-  if (binaOk) await bothCharacterTurn("rone");
+  for (const id of getBothParticipants()) {
+    const ok = await bothCharacterTurn(id);
+    if (!ok) break; // one failed call (e.g. rate limit) - don't pile the rest on top of it
+  }
 
   setBothControlsDisabled(false);
   chatInput.disabled = false;
@@ -2595,7 +2875,19 @@ async function handleBothSend() {
 }
 
 function enterBothMode() {
-  if (activeCharacterId === "both") { renderCharacterSwitcher(); return; }
+  if (activeCharacterId === "both") {
+    // Already in the room - this is a roster edit (bothEditRosterBtn), not
+    // a fresh entry. Just repaint who's actually here now and bail before
+    // touching anything that assumes a fresh entry (headers, theme mode,
+    // the transcript's intro bubble).
+    renderBothRoster();
+    renderBothPortraits();
+    renderBothStatusBars();
+    currentBothThemeKey = null; // roster changed - force the split theme to recheck both sides
+    applyBothModeTheme();
+    renderCharacterSwitcher();
+    return;
+  }
   activeCharacterId = "both";
   currentThemeMin = null;
 
@@ -2630,6 +2922,7 @@ function enterBothMode() {
 
   if (bothHeader) { bothHeader.classList.remove("visible"); void bothHeader.offsetWidth; bothHeader.classList.add("visible"); }
 
+  renderBothRoster();
   renderBothPortraits();
   renderBothStatusBars();
   restoreBothTranscript();
@@ -2805,34 +3098,47 @@ function themeForCharacterStatus(char, status) {
 // animation code needed here, just set-and-forget like applyMoodTheme().
 function applyBothModeTheme() {
   if (getUserTheme() !== "auto") return; // manual preset locked - leave it alone
-  const binaTheme = themeForCharacterStatus(CHARACTERS.bina, loadStatusForCharacterId("bina"));
-  const roneTheme = themeForCharacterStatus(CHARACTERS.rone, loadStatusForCharacterId("rone"));
-  const key = binaTheme.min + "|" + roneTheme.min;
-  if (key === currentBothThemeKey) return; // both sides unchanged, skip redundant writes
+  const participants = getBothParticipants();
+  const firstId = participants[0];
+  const secondId = participants[1];
+  if (!CHARACTERS[firstId]) return;
+  const firstTheme = themeForCharacterStatus(CHARACTERS[firstId], loadStatusForCharacterId(firstId));
+  // The left/right split background is inherently a two-way visual. With
+  // exactly 2 in the room this is the original Bina/Rone-style split, just
+  // generalized to whichever two Roundies are actually picked. With 3+,
+  // the room's shared backdrop settles on the first two Roundies' moods -
+  // everyone still gets her own real mood driving her own mini portrait
+  // glow (see renderBothStatusBars), there just isn't a third "side" of
+  // the screen to give her.
+  const secondTheme = CHARACTERS[secondId]
+    ? themeForCharacterStatus(CHARACTERS[secondId], loadStatusForCharacterId(secondId))
+    : firstTheme;
+  const key = firstTheme.min + "|" + secondTheme.min;
+  if (key === currentBothThemeKey) return; // neither side changed, skip redundant writes
   currentBothThemeKey = key;
 
   const root = document.documentElement.style;
-  // Left half reuses the same tokens the solo Bina view uses.
-  root.setProperty("--bg-top", binaTheme.bgTop);
-  root.setProperty("--bg-bottom", binaTheme.bgBottom);
-  root.setProperty("--accent", binaTheme.accent);
-  root.setProperty("--accent-light", binaTheme.accentLight);
-  root.setProperty("--muted", binaTheme.muted);
-  root.setProperty("--bot-bubble", binaTheme.botBubble);
-  root.setProperty("--accent-rgb", binaTheme.accentRgb);
-  root.setProperty("--bg-top-rgb", binaTheme.bgTopRgb);
+  // Left half.
+  root.setProperty("--bg-top", firstTheme.bgTop);
+  root.setProperty("--bg-bottom", firstTheme.bgBottom);
+  root.setProperty("--accent", firstTheme.accent);
+  root.setProperty("--accent-light", firstTheme.accentLight);
+  root.setProperty("--muted", firstTheme.muted);
+  root.setProperty("--bot-bubble", firstTheme.botBubble);
+  root.setProperty("--accent-rgb", firstTheme.accentRgb);
+  root.setProperty("--bg-top-rgb", firstTheme.bgTopRgb);
   // Right half writes the "-r" tokens.
-  root.setProperty("--bg-top-r", roneTheme.bgTop);
-  root.setProperty("--bg-bottom-r", roneTheme.bgBottom);
-  root.setProperty("--accent-r", roneTheme.accent);
-  root.setProperty("--accent-light-r", roneTheme.accentLight);
-  root.setProperty("--muted-r", roneTheme.muted);
-  root.setProperty("--bot-bubble-r", roneTheme.botBubble);
-  root.setProperty("--accent-rgb-r", roneTheme.accentRgb);
-  root.setProperty("--bg-top-rgb-r", roneTheme.bgTopRgb);
+  root.setProperty("--bg-top-r", secondTheme.bgTop);
+  root.setProperty("--bg-bottom-r", secondTheme.bgBottom);
+  root.setProperty("--accent-r", secondTheme.accent);
+  root.setProperty("--accent-light-r", secondTheme.accentLight);
+  root.setProperty("--muted-r", secondTheme.muted);
+  root.setProperty("--bot-bubble-r", secondTheme.botBubble);
+  root.setProperty("--accent-rgb-r", secondTheme.accentRgb);
+  root.setProperty("--bg-top-rgb-r", secondTheme.bgTopRgb);
   // The browser chrome/status-bar color splits the difference between the
   // two moods rather than fully committing to either side.
-  if (metaThemeColorEl) metaThemeColorEl.setAttribute("content", binaTheme.bgBottom);
+  if (metaThemeColorEl) metaThemeColorEl.setAttribute("content", firstTheme.bgBottom);
 }
 
 function renderStatusBars() {
@@ -2995,7 +3301,7 @@ const chatContainer = document.getElementById("chat");
 // reply) surfaces here instead of as text pasted into the chat pretending
 // to be something she said. Auto-dismisses, but can be tapped away early.
 const errorToastStack = document.getElementById("errorToastStack");
-function showErrorToast(message) { showToast(message, "⚠️", "error"); }
+function showErrorToast(message) { sfxError(); showToast(message, "⚠️", "error"); }
 function showInfoToast(message, icon) { showToast(message, icon || "✨", "info"); }
 
 function showToast(message, icon, variant) {
@@ -4279,6 +4585,16 @@ async function handleChatSend() {
   }
 
   const userDiv = addMsg(userText, "user");
+  sfxSend();
+  // Read her mood/affection off what was ACTUALLY typed, not the synthetic
+  // "*is here, saying nothing in particular*" nudge text - a silent nudge
+  // has no sentiment to score. Runs immediately, before the API call even
+  // starts, so the meter is honest even if the request later fails.
+  if (!isNudge) {
+    applyLocalMoodSignal(characterStatus, rawInput);
+    saveCharacterStatus();
+    renderStatusBars();
+  }
   const userLogIdx = Number(userDiv.dataset.logIndex);
   chatInput.value = ""; autoGrowChatInput();
   chatInput.disabled = true;
@@ -4309,6 +4625,7 @@ async function handleChatSend() {
   // find them later.
   updateLogEntryApiIndex(userLogIdx, chatHistory.length - 2);
   addMsg(result.text, "bot", { apiIndex: chatHistory.length - 1 });
+  sfxReceive();
   bumpInterruptCounters(activeCharacterId);
   chatInput.focus();
 }
@@ -4381,7 +4698,9 @@ function showerRoundbina() {
     addMsg("*a shower won't help now...* She needs to be revived first - open ⚙️ settings.", "system-msg");
     return;
   }
+  localStorage.setItem(LS.LAST_SHOWERED, String(Date.now()));
   spawnSparkle(portrait, ["💦", "🫧", "🚿"]);
+  renderStatusBars(); // reflect the reset immediately, don't wait for a reply
   if (!connected) {
     addMsg("*splish splash* Ahh, that's refreshing! Thank you for the shower~ 🚿", "bot");
     return;
@@ -4558,6 +4877,16 @@ setInterval(() => {
   }
 }, 5 * 60 * 1000);
 
+// Keeps the hunger/cleanliness bars (and affection's slow passive drift)
+// visibly current even if the person just leaves the app open and idle,
+// instead of only updating on the next message/action - purely a repaint,
+// recomputing off the same elapsed-time formulas renderStatusBars() and
+// renderBothStatusBars() already use, no API call involved.
+setInterval(() => {
+  if (isBothMode()) { renderBothPortraits(); renderBothStatusBars(); }
+  else renderStatusBars();
+}, 60 * 1000);
+
 // Also stamp "last active" right before the page unloads/closes, so a full
 // close-and-reopen (not just backgrounding) is measured accurately too.
 window.addEventListener("pagehide", () => {
@@ -4565,28 +4894,20 @@ window.addEventListener("pagehide", () => {
 });
 
 // ---- 8. HUNGER METER + DRAG-AND-DROP FEEDING ----------------------------
-// Hunger climbs the longer Roundbina is left alone (measured off the last
-// feeding timestamp, persisted in localStorage so it survives closing the
-// app). Dragging a food emoji onto her portrait feeds her: sparkle effect,
-// a cute chat message, and the hunger timer resets to zero.
-function getHungerLevel() {
-  const now = Date.now();
-  const lastFedRaw = localStorage.getItem(LS.LAST_FED);
-  const lastFed = lastFedRaw ? parseInt(lastFedRaw, 10) : now;
-  const elapsedMinutes = (now - lastFed) / (60 * 1000);
-  const hunger = Math.min(HUNGER_MAX, Math.floor(elapsedMinutes / (HUNGER_RATE_MS / 60000)));
-  localStorage.setItem(LS.HUNGER, String(hunger));
-  return hunger;
-}
-
+// Hunger climbs the longer Roundbina is left alone, computed fresh off the
+// last feeding timestamp every time it's read (see computeHunger() near
+// loadCharacterStatus() above) - there's no separate stored "current
+// hunger" value to keep in sync. Dragging a food emoji onto her portrait
+// feeds her: sparkle effect, a cute chat message, and the timer resets.
 function feedRoundbina(emoji, foodName) {
   if (isDead()) {
     addMsg("*food won't wake her now...* She needs to be revived first - open ⚙️ settings.", "system-msg");
     return;
   }
   localStorage.setItem(LS.LAST_FED, String(Date.now()));
-  localStorage.setItem(LS.HUNGER, "0");
   spawnSparkle(portrait);
+  sfxFeed();
+  renderStatusBars(); // reflect the reset immediately, don't wait for a reply
 
   if (!connected) {
     addMsg(`*munch munch* Mmm, ${foodName}! Thank you~ ${emoji}`, "bot");
@@ -4632,7 +4953,9 @@ function applyDeadUI(dead) {
 function markDead() {
   localStorage.setItem(LS.IS_DEAD, "true");
   localStorage.setItem(LS.DIED_AT, String(Date.now()));
-  characterStatus.hunger = 0;
+  // Hunger isn't set manually here - by the time DEATH_GAP_MS has actually
+  // elapsed since LAST_FED, computeHunger() already reads at (or near) 0
+  // on its own, since it's a pure function of that same timestamp.
   characterStatus.affection = clamp0to100(Math.min(characterStatus.affection, 25));
   characterStatus.mood = "gone";
   saveCharacterStatus();
@@ -4683,12 +5006,16 @@ async function confirmRevive() {
 
   localStorage.setItem(LS.IS_DEAD, "false");
   localStorage.removeItem(LS.DIED_AT);
-  localStorage.setItem(LS.LAST_FED, String(Date.now())); // restart the clock so she isn't instantly re-flagged
 
   // She comes back weak, not instantly back to full - a real recovery, not
-  // a reset button.
-  characterStatus.hunger = 25;
-  characterStatus.cleanliness = clamp0to100(Math.min(characterStatus.cleanliness, 40));
+  // a reset button. Hunger/cleanliness are pure functions of LAST_FED/
+  // LAST_SHOWERED now, so "start at 25/40" means backdating those
+  // timestamps to whatever elapsed gap reads out to that value, rather
+  // than setting a characterStatus field directly (which would just get
+  // overwritten the next time it's recomputed).
+  localStorage.setItem(LS.LAST_FED, String(backdateForValue(HUNGER_DECAY_MS, 25)));
+  localStorage.setItem(LS.LAST_SHOWERED, String(backdateForValue(CLEAN_DECAY_MS, 40)));
+
   characterStatus.affection = clamp0to100(Math.max(characterStatus.affection, 40));
   characterStatus.mood = "dazed";
   saveCharacterStatus();
@@ -5307,9 +5634,8 @@ if ("serviceWorker" in navigator) {
     localStorage.setItem(LS.LAST_ACTIVE, String(Date.now()));
   }
 
-  getHungerLevel();       // 8. recompute hunger so it's accurate on open
   initFoodTray();         // 8. mount the feeding tray + drag handlers
-  renderStatusBars();     // AI-narrated hunger/cleanliness bars beside the sprite (also repaints portrait art)
+  renderStatusBars();     // hunger/cleanliness (elapsed-time) + affection/mood (locally-derived) bars beside the sprite (also repaints portrait art)
   checkAndUpdateStreak(); // app-wide daily streak, independent of either character
   renderStreakBadges();
   renderThemeSwatches();  // paint the theme picker + apply any saved manual theme
