@@ -36,6 +36,7 @@
       <button class="charTab" data-character="rone" onclick="switchCharacter('rone')">Roundrone</button>
       <button class="charTab" data-character="ecchino" onclick="switchCharacter('ecchino')">Roundecchino</button>
     </div>
+    <div class="headerCollapsible" id="headerCollapsible">
     <div id="singleHeader">
     <div class="portrait-row">
       <div class="statusBars">
@@ -103,39 +104,26 @@
     </div>
     <div class="deceasedMarker" id="deceasedMarker" style="display:none;">🥀 unresponsive - needs to be revived</div>
     <div class="moodBadge" id="moodBadge" title="How she's feeling right now"><span id="moodEmoji">🙂</span> <span id="moodWord">happy</span></div>
+    <div class="storyBadge" id="storyBadge" title="A story is running - tap to view or end it" onclick="toggleStoryModal(true)" style="display:none;"></div>
     <h1 id="charName">Roundbina <span class="tomato" id="charEmoji">🍅</span></h1>
     <div class="sub" id="charSubtitle">an 8cm tall pocket companion</div>
     <div class="lore" id="charLore">her tiny chibi self — Columbina, the Damselette</div>
     </div>
     <div id="bothHeader" style="display:none;">
-      <div class="dualPortraitRow" id="dualPortraitRow">
-        <div class="miniCompanion" id="miniBina">
-          <div class="miniPortrait" id="miniBinaPortrait"><img id="miniBinaImg" alt="Roundbina" /></div>
-          <div class="miniName">🍅 Roundbina</div>
-          <div class="miniBars">
-            <div class="miniBar hunger" title="Roundbina's hunger"><div class="miniFill" id="miniBinaHunger"></div></div>
-            <div class="miniBar affection" title="Roundbina's affection"><div class="miniFill" id="miniBinaAffection"></div></div>
-            <div class="miniBar clean" title="Roundbina's cleanliness"><div class="miniFill" id="miniBinaClean"></div></div>
-          </div>
-          <div class="miniMood" id="miniBinaMood">🙂 happy</div>
-        </div>
-        <div class="miniCompanion" id="miniRone">
-          <div class="miniPortrait" id="miniRonePortrait"><img id="miniRoneImg" alt="Roundrone" /></div>
-          <div class="miniName">🗝️ Roundrone</div>
-          <div class="miniBars">
-            <div class="miniBar hunger" title="Roundrone's hunger"><div class="miniFill" id="miniRoneHunger"></div></div>
-            <div class="miniBar affection" title="Roundrone's affection"><div class="miniFill" id="miniRoneAffection"></div></div>
-            <div class="miniBar clean" title="Roundrone's cleanliness"><div class="miniFill" id="miniRoneClean"></div></div>
-          </div>
-          <div class="miniMood" id="miniRoneMood">🙂 happy</div>
-        </div>
-      </div>
-      <div class="sub">Roundbina &amp; Roundrone, together in one room</div>
+      <!-- Populated by renderBothRoster() for however many (2+) Roundies
+           were picked in the group selector - no fixed count baked in
+           here anymore, so a future 3rd/4th/5th adopted Roundie needs no
+           HTML changes to show up in the room. -->
+      <div class="dualPortraitRow" id="dualPortraitRow"></div>
+      <div class="sub" id="bothSubLine">together in one room</div>
       <div class="bothControls" id="bothControls">
         <button class="iconBtn" id="bothNextBtn" onclick="bothNextExchange()">▶️ Let them talk</button>
         <button class="iconBtn" id="bothAutoBtn" onclick="toggleBothAutoplay()">🔁 Auto: off</button>
+        <button class="iconBtn" id="bothEditRosterBtn" onclick="openGroupSelector()">✏️ Change who's here</button>
       </div>
     </div>
+    </div>
+    <button type="button" class="headerCollapseBtn" id="headerCollapseBtn" onclick="toggleHeaderCollapse()" aria-label="Hide companion panel" title="Hide companion panel">⌃</button>
   </header>
 
   <div class="chatWrap" id="chatWrap">
@@ -153,7 +141,7 @@
       <button class="drawerCloseBtn" onclick="toggleMenuDrawer(false)" aria-label="Close menu">✕</button>
     </div>
     <div class="menuList">
-      <button type="button" class="menuListItem" id="roundgroupMenuItem" onclick="switchCharacter('both'); toggleMenuDrawer(false);">
+      <button type="button" class="menuListItem" id="roundgroupMenuItem" onclick="openGroupSelector(); toggleMenuDrawer(false);">
         <span class="menuItemIcon">👥</span>
         <span>Roundgroup</span>
       </button>
@@ -210,6 +198,9 @@
     </div>
     <div class="drawerSection">
       <button class="iconBtn" id="viewScenariosBtn" onclick="toggleScenariosModal(true)">🎭 scenarios</button>
+    </div>
+    <div class="drawerSection">
+      <button class="iconBtn" id="viewStoryBtn" onclick="toggleStoryModal(true)">📖 craft a story</button>
     </div>
     <div class="drawerSection">
       <label>💾 backup &amp; restore</label>
@@ -271,6 +262,13 @@
     <div class="drawerSection" id="systemPromptSection">
       <label for="systemPromptInput">💬 custom personality prompt</label>
       <textarea id="systemPromptInput" rows="6" placeholder="Describe how Roundbina should behave..."></textarea>
+    </div>
+    <div class="drawerSection">
+      <label style="display:flex; align-items:center; gap:8px; cursor:pointer;">
+        <input type="checkbox" id="soundEnabledCheckbox" style="width:auto;" checked />
+        🔔 sound effects
+      </label>
+      <div class="historyMeta">Tiny built-in chimes for sending/receiving messages, feeding, gifts, switching companions, and entering Roundgroup - no audio files, generated on the fly.</div>
     </div>
     <div class="drawerSection">
       <label style="display:flex; align-items:center; gap:8px; cursor:pointer;">
@@ -369,6 +367,17 @@
         <button class="iconBtn" onclick="addScenario()">➕ add scenario</button>
       </div>
     </div>
+  </div>
+
+  <div class="historyBackdrop" id="storyBackdrop" onclick="toggleStoryModal(false)"></div>
+  <div class="historyModal" id="storyModal">
+    <div class="historyModalHeader">
+      <h2>📖 Craft a Story</h2>
+      <button class="drawerCloseBtn" onclick="toggleStoryModal(false)" aria-label="Close story">✕</button>
+    </div>
+    <div class="historyMeta">Pick a genre and she'll generate a full setting that stays consistent in the background across every reply - until you end it, this chat plays out inside that world. Each Roundie keeps their own story, entirely separate.</div>
+    <div id="storyStatus"></div>
+    <div class="storyGenreGrid" id="storyGenreGrid"></div>
   </div>
 
 
@@ -504,6 +513,29 @@
         <div class="historyMeta" style="margin-top:8px;">This downloads a zip with their JSON + art. Send that zip to Roundbina's creator to get them adopted into everyone's gallery — nothing here uploads anywhere on its own.</div>
         <div class="historyMeta" id="b-statusMsg" style="margin-top:6px; color:var(--accent-light);"></div>
       </div>
+    </div>
+  </div>
+</div>
+
+<!-- ---- Roundgroup character selector ----
+     A deliberately BIG screen (not a small dropdown/panel) for picking who
+     joins the shared room - every registered Roundie shows up here as a
+     tappable card, built-ins and adopted gallery Roundies alike, straight
+     off the CHARACTERS registry. Picking 2 or more and confirming is what
+     actually enters Roundgroup - see openGroupSelector()/confirmGroupSelection()
+     in app.js. Reachable both from the menu and from inside the room itself
+     (bothEditRosterBtn), so the roster can change mid-conversation too. -->
+<div class="groupSelectModal" id="groupSelectModal" style="display:none;">
+  <div class="groupSelectPanel">
+    <div class="galleryHeader">
+      <h2>Who's in the room?</h2>
+      <button class="galleryClose" onclick="closeGroupSelector()" aria-label="Close">✕</button>
+    </div>
+    <div class="groupSelectHint">Pick 2 or more Roundies to share a room together.</div>
+    <div class="groupSelectGrid" id="groupSelectGrid"></div>
+    <div class="groupSelectFooter">
+      <span class="groupSelectCount" id="groupSelectCount">Pick at least 2</span>
+      <button class="iconBtn groupSelectStartBtn" id="groupSelectConfirmBtn" onclick="confirmGroupSelection()" disabled>Start Roundgroup ▶️</button>
     </div>
   </div>
 </div>

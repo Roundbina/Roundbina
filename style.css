@@ -1189,6 +1189,47 @@
     background: #3a2b40; color: #fff; padding: 8px 10px; font: inherit; font-size: 13px;
   }
 
+  /* ---- Craft a Story ---- */
+  /* Small pill in the header, same look as .moodBadge, shown only while a
+     story is running for the character currently on screen. */
+  .storyBadge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    margin: 4px auto 0;
+    padding: 2px 10px;
+    border-radius: 999px;
+    background: rgba(255,255,255,0.08);
+    border: 1px solid rgba(255,255,255,0.18);
+    color: var(--accent-light);
+    font-size: 11px;
+    width: fit-content;
+    cursor: pointer;
+    transition: transform .3s var(--ease-elastic);
+  }
+  .storyBadge:hover { transform: translateY(-1px) scale(1.03); }
+  .storyStatusCard {
+    background: rgba(0,0,0,0.18); border-radius: 12px; padding: 12px;
+    display: flex; flex-direction: column; gap: 8px; margin-bottom: 4px;
+  }
+  .storyStatusTitle { font-size: 12px; font-weight: 700; color: var(--accent-light); }
+  .storyStatusCore { font-size: 12px; line-height: 1.4; color: #cbb8d4; max-height: 22vh; overflow-y: auto; white-space: pre-wrap; }
+  .storyStatusCard .iconBtn { align-self: flex-start; font-size: 12px; padding: 6px 12px; }
+  .storyGenreGrid {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 8px;
+    max-height: 40vh; overflow-y: auto; margin-top: 4px;
+  }
+  .storyGenreBtn {
+    display: flex; flex-direction: column; align-items: center; gap: 4px;
+    background: rgba(0,0,0,0.18); border: 1px solid rgba(255,255,255,0.12);
+    border-radius: 12px; padding: 12px 6px; color: #cbb8d4; cursor: pointer;
+    font: inherit; transition: transform .15s ease, background .15s ease;
+  }
+  .storyGenreBtn:hover { transform: translateY(-1px); background: rgba(255,255,255,0.08); }
+  .storyGenreBtn:disabled { opacity: 0.5; cursor: default; transform: none; }
+  .storyGenreEmoji { font-size: 22px; }
+  .storyGenreLabel { font-size: 11px; text-align: center; line-height: 1.25; }
+
   @media (prefers-reduced-motion: reduce) {
     .mote, .tomato, .msg, .typing span, .wing { animation: none !important; }
     .settingsDrawer, .drawerBackdrop { transition: none !important; }
@@ -1697,67 +1738,3 @@
   .groupSelectCount { font-size: 12.5px; color: var(--muted); }
   .groupSelectStartBtn { width: auto; font-size: 13.5px; padding: 10px 18px; }
   .groupSelectStartBtn:disabled { opacity: 0.4; cursor: not-allowed; }
-
-  /* ---- Desktop layout ----
-     Everything above this point is written mobile-first (a single
-     vertical stack: header, then chat, then the input bar) - which also
-     just works edge-to-edge in a desktop browser, but reads as an
-     over-stretched phone screen rather than a real desktop app. This
-     block turns the SAME markup into a two-pane layout at wider
-     viewports - portrait/stat-bars/character-tabs/mood panel becomes a
-     left sidebar, chat + input becomes the right pane - purely by
-     re-placing the existing header/.chatWrap/.inputBar into a CSS Grid.
-     No HTML/JS changes needed: every element keeps the exact same id/
-     class/DOM position, so nothing that currently reads or writes to
-     these elements needs to know or care that a desktop window is even
-     a different shape. */
-  @media (min-width: 860px) {
-    html { background: #0d0810; } /* letterboxing behind the centered card */
-
-    body {
-      display: grid;
-      grid-template-columns: 300px 1fr;
-      grid-template-rows: 1fr auto;
-      grid-template-areas:
-        "sidebar chat"
-        "sidebar input";
-      max-width: 1180px;
-      height: 100vh;
-      height: 100dvh;
-      margin: 0 auto;
-      box-shadow: 0 0 70px rgba(0,0,0,0.45);
-    }
-
-    header {
-      grid-area: sidebar;
-      overflow-y: auto;
-      border-right: var(--glass-border-thin);
-      padding-bottom: 18px;
-    }
-    .chatWrap { grid-area: chat; min-width: 0; }
-    .inputBar { grid-area: input; }
-
-    /* There's a whole sidebar's worth of vertical room on desktop, so the
-       collapse caret (built for a small phone screen where every pixel
-       of chat-reading room matters - see toggleHeaderCollapse() in
-       app.js) doesn't apply here: hide the handle and force the panel
-       open regardless of whatever was last saved from mobile use. */
-    .headerCollapseBtn { display: none; }
-    .headerCollapsible.collapsed {
-      max-height: none; opacity: 1; margin: unset; pointer-events: auto;
-    }
-
-    /* A drag-and-drop food tray or portrait sized for a thumb doesn't
-       need to shrink to fit a phone width anymore - let it breathe. */
-    .portrait-row { flex-wrap: nowrap; }
-
-    /* Roundgroup's mini-companion row and the group selector/gallery
-       modals already cap their own width with min(94vw, Npx) - at
-       desktop sizes that min() just resolves to their fixed px cap, so
-       no separate override is needed here for them to look right.
-
-       chat message bubbles benefit from NOT stretching to a full-width
-       desktop pane's width - keeps long replies readable instead of
-       reading as a single sprawling line. */
-    .msg { max-width: min(78%, 620px); }
-  }

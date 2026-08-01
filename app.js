@@ -84,6 +84,19 @@ const LS_PER_CHARACTER_BASE = {
   LAST_SHOWERED:"lastShowered",// timestamp of last shower - cleanliness decays off this the same way hunger decays off LAST_FED
   IS_DEAD:      "isDead",      // "true" once she's gone unfed too long
   DIED_AT:      "diedAt",      // timestamp of death, for flavor/records
+
+  // ---- Craft a Story (see the "Craft a Story" section further down) ----
+  // A persistent world/setting, separate from the one-off Scenarios above -
+  // once started, its STORY_CORE text rides along in the system prompt on
+  // EVERY reply (see getSystemPrompt()) until the person explicitly ends
+  // it, so the setting stays consistent turn after turn instead of being a
+  // single nudge that fades from context. Per-character like everything
+  // else in this block (resolved through charKey() by the LS Proxy below),
+  // so each Roundie's own story is entirely independent - starting one for
+  // Roundrone never touches whatever Roundbina has going.
+  STORY_ACTIVE: "storyActive", // "true" while a crafted story is currently running for this character
+  STORY_GENRE:  "storyGenre",  // which STORY_GENRES key was picked, so the modal can show it and re-rolling knows the last genre
+  STORY_CORE:   "storyCore",   // the ~100-token generated setting text itself, injected into the system prompt while active
   HUNGER:       "hunger",      // no longer read/written - kept only so an old save doesn't throw on a stale key. (Its own name is misleading now anyway: the REAL hunger value, computeHunger() below, actually runs 100=full down to 0=starving - the opposite of what this dead key's original 0-full/100-starving convention implied.)
 
   // Hunger and cleanliness bars: purely real-elapsed-time decay off
@@ -531,6 +544,13 @@ function getSystemPrompt() {
   const tier = getAffectionTier(characterStatus.affection);
   const tierNote = `\n\n---\nYour current relationship tier with them is "${tier.label}" (affection ${characterStatus.affection}/100). ${tier.note} Let this genuinely color how you speak to them - don't announce the tier itself, just let it shape your tone.`;
   const killPart = needsKillInstructionThisTurn ? KILL_INSTRUCTION : "";
+  // Craft a Story: if the person started one for this character, its core
+  // setting rides along on EVERY reply (unlike a Scenario, which is just a
+  // one-time nudge) - see the "Craft a Story" section further down for how
+  // it's generated and how ending it clears this back out.
+  const storyPart = (localStorage.getItem(LS.STORY_ACTIVE) === "true" && localStorage.getItem(LS.STORY_CORE))
+    ? `\n\n---\n[Ongoing story setting - stay consistent with this world/situation across every reply until the person ends the story, weaving it naturally into how you narrate and react. Never recite this note verbatim or acknowledge it as a note/prompt - just genuinely be in it:]\n${localStorage.getItem(LS.STORY_CORE)}`
+    : "";
   // Separate from the personality prompt above (which the "custom
   // personality prompt" field fully replaces) - this is steering aimed at
   // the MODEL rather than the CHARACTER, so it always gets tacked on
@@ -538,7 +558,7 @@ function getSystemPrompt() {
   const steeringPart = modelSteeringNotes.trim()
     ? `\n\n---\n[Model-specific instructions - follow these strictly, they exist because this particular model needs the extra nudge:]\n${modelSteeringNotes.trim()}`
     : "";
-  return base + tierNote + killPart + buildStatusInstruction(char) + MOOD_TAG_INSTRUCTION + FORMAT_INSTRUCTION + EFFECT_INSTRUCTION + steeringPart;
+  return base + tierNote + storyPart + killPart + buildStatusInstruction(char) + MOOD_TAG_INSTRUCTION + FORMAT_INSTRUCTION + EFFECT_INSTRUCTION + steeringPart;
 }
 
 // ---- AI-narrated status bars (hunger / cleanliness / affection) ----------
@@ -663,6 +683,26 @@ function backdateForValue(decayMs, targetValue) {
   return Date.now() - Math.round((1 - clamp0to100(targetValue) / 100) * decayMs);
 }
 
+// Hunger used to be PURELY time-based (see HUNGER_RATE_MS/HUNGER_DECAY_MS
+// above) - fine for "left alone for hours", but it meant a long, rapid-fire
+// chat session barely moved the bar at all, since almost no real time was
+// actually passing between messages. This adds a flat, immediate drop each
+// time the PERSON sends a message, layered on top of (not instead of) the
+// existing passive decay - so she still gets hungrier while you're away,
+// AND actually talking to her burns through a meal over the course of a
+// conversation the way you'd expect.
+//
+// Implemented by backdating LAST_FED itself (the same trick
+// feedRoundbina()/confirmRevive() already use) rather than introducing a
+// second stored hunger value - keeps computeHunger() a pure function of
+// one timestamp, so it can never drift out of sync with time-based decay.
+const MESSAGE_HUNGER_DECAY = 5;
+function bumpHungerForMessage(lastFedKey) {
+  const current = computeHunger(localStorage.getItem(lastFedKey));
+  const next = clamp0to100(current - MESSAGE_HUNGER_DECAY);
+  localStorage.setItem(lastFedKey, String(backdateForValue(HUNGER_DECAY_MS, next)));
+}
+
 // ---- Mood & affection: derived locally from what's actually said --------
 // This replaces asking the model to self-report mood/affection via the
 // same hidden tag hunger/cleanliness used to ride on - the exact mechanism
@@ -719,6 +759,13 @@ function scoreMessageMood(text) {
 // solo (handleChatSend) or Roundgroup (addBothMsg) - so the meter reacts
 // immediately, even before her reply comes back (or even if the API call
 // fails entirely).
+//
+// This is explicitly a PROVISIONAL placeholder, not the real driver - it's
+// dumb keyword matching on the person's own outgoing text, so it can't
+// catch sarcasm, context, or how she actually takes it. The moment her
+// reply comes back with its own {{MOOD word}} tag, nudgeAffectionTowardMood()
+// (the AI's own contextual read) takes over and pulls affection hard
+// toward what she's actually feeling, overriding whatever this guessed.
 function applyLocalMoodSignal(status, text) {
   const signal = scoreMessageMood(text);
   if (!signal) return status;
@@ -903,20 +950,39 @@ function parseAndApplyKillTag(text) {
 const MOOD_TAG_OWN_LINE_RE = /(?:^|\n)[ \t]*\{\{\s*MOOD\s+([a-zA-Z][a-zA-Z '-]{0,30})\}\}[ \t]*(?=\n|$)/i;
 const MOOD_TAG_INLINE_RE = /\{\{\s*MOOD\s+([a-zA-Z][a-zA-Z '-]{0,30})\}\}/i;
 
-// Small, deliberate nudge (never a jump) toward the affection level
-// MOOD_LEVEL associates with an LLM-refined mood report - lets a genuinely
-// nuanced read (sarcasm, context, everything the regex-based scorer above
-// can't see) gently correct affection over a few turns, the same modest
-// order of magnitude as MOOD_SIGNAL_PATTERNS' own deltas above, without
-// letting one single reply swing it wildly the way fully trusting a
-// self-reported number used to.
-const MOOD_TAG_AFFECTION_NUDGE = 5;
+// The AI's own mood read is the PRIMARY, dominant driver of affection -
+// it's a genuinely nuanced read (sarcasm, context, everything actually
+// said, how hungry/ignored she's been) that the keyword scorer on the
+// person's outgoing text (applyLocalMoodSignal() above) can't approximate,
+// and MOOD_TAG_INSTRUCTION asks the model for this tag on every single
+// reply, so it's reliable enough to lean on hard rather than treat as a
+// once-in-a-while bonus signal. applyLocalMoodSignal() still fires the
+// instant a message is SENT, purely so the bar/portrait aren't sitting
+// frozen for the second or two before the reply comes back - but the tag
+// below is what actually settles it once that reply lands, overriding
+// whatever the keyword guess set.
+//
+// The step is a FRACTION of the current gap rather than jumping straight
+// to target in one message (which would make every reply visibly snap the
+// bar and look janky) - but the fraction is high enough that a large
+// mismatch (mood suddenly says "hysterical"/MOOD_LEVEL 15 while affection
+// is still sitting up at "devoted"/92) closes almost all of that 77-point
+// gap in a turn or two, converging fully within about 3 replies, instead
+// of the old flat +/-5-a-message crawl that could take 15+ messages and
+// never actually catch up before the conversation moved on.
+// MOOD_TAG_AFFECTION_NUDGE_MIN keeps small gaps from stalling out at a
+// near-zero step as they close in on the target.
+const MOOD_TAG_AFFECTION_NUDGE_FRACTION = 0.7;
+const MOOD_TAG_AFFECTION_NUDGE_MIN = 6;
 function nudgeAffectionTowardMood(status, moodKey) {
   const target = MOOD_LEVEL[moodKey];
   if (target === undefined) return;
   const diff = target - status.affection;
-  const step = Math.sign(diff) * Math.min(Math.abs(diff), MOOD_TAG_AFFECTION_NUDGE);
-  status.affection = clamp0to100(status.affection + step);
+  const magnitude = Math.min(
+    Math.abs(diff),
+    Math.max(MOOD_TAG_AFFECTION_NUDGE_MIN, Math.abs(diff) * MOOD_TAG_AFFECTION_NUDGE_FRACTION)
+  );
+  status.affection = clamp0to100(status.affection + Math.sign(diff) * magnitude);
 }
 
 // Mutates `status` in place if a resolvable {{MOOD word}} tag is found,
@@ -2441,6 +2507,9 @@ function addBothMsg(speaker, text, persist = true) {
         const status = loadStatusForCharacterId(id);
         applyLocalMoodSignal(status, text);
         saveStatusForCharacterId(id, status);
+        // Same flat per-message hunger drop as solo chat - see
+        // bumpHungerForMessage() near computeHunger().
+        bumpHungerForMessage(bothStatusKey(id, "lastFed"));
       });
       renderBothPortraits();
       renderBothStatusBars();
@@ -3344,6 +3413,7 @@ function renderStatusBars() {
     moodWordEl.textContent = characterStatus.mood;
     moodEmojiEl.textContent = getMoodEmoji(characterStatus.mood, characterStatus.affection);
   }
+  if (typeof renderStoryBadge === "function") renderStoryBadge();
   // Marks whether Roundrone is the character currently on screen (solo, not
   // Roundboth) so the CSS above can switch off Bina's pink tint filters -
   // see the affection-high/affection-low/awake overrides near .portrait.
@@ -4850,8 +4920,13 @@ async function handleChatSend() {
   if (!isNudge) {
     applyLocalMoodSignal(characterStatus, rawInput);
     saveCharacterStatus();
-    renderStatusBars();
   }
+  // Hunger drops a flat amount per message sent, nudge or not - talking to
+  // her takes place over time same as anything else (see
+  // bumpHungerForMessage() near computeHunger() for why).
+  bumpHungerForMessage(LS.LAST_FED);
+  characterStatus.hunger = computeHunger(localStorage.getItem(LS.LAST_FED));
+  renderStatusBars();
   const userLogIdx = Number(userDiv.dataset.logIndex);
   chatInput.value = ""; autoGrowChatInput();
   chatInput.disabled = true;
@@ -5164,17 +5239,48 @@ window.addEventListener("pagehide", () => {
 });
 
 // ---- 8. HUNGER METER + DRAG-AND-DROP FEEDING ----------------------------
+// How much hunger each dish actually restores - a dango skewer is a bite,
+// not a meal, so it shouldn't fill an empty stomach the same as a bowl of
+// ramen or a roast hen would. Values are hunger points restored (0-100
+// scale, same as the bar itself). Anything not listed (e.g. a custom
+// Roundie's own food) falls back to FOOD_FILL_DEFAULT below.
+const FOOD_FILL_AMOUNTS = {
+  "Dango": 12,
+  "Mochi Ring": 15,
+  "Filigree Tea Cake": 18,
+  "Compass Tea Cake": 18,
+  "Crystal Peach Plate": 20,
+  "Blueberry Tart": 20,
+  "Golden Roc Roll": 22,
+  "Berry Sandwich Cake": 25,
+  "Nocturne Cake": 25,
+  "Wingberry Trifle": 30,
+  "Swan Bakery Basket": 30,
+  "Ox Banner Cake": 35,
+  "Dim Sum Basket": 40,
+  "Winged Pancake Stack": 40,
+  "Ramen": 50,
+  "Quillroast Hen": 55
+};
+const FOOD_FILL_DEFAULT = 25;
+
 // Hunger climbs the longer Roundbina is left alone, computed fresh off the
 // last feeding timestamp every time it's read (see computeHunger() near
 // loadCharacterStatus() above) - there's no separate stored "current
 // hunger" value to keep in sync. Dragging a food emoji onto her portrait
-// feeds her: sparkle effect, a cute chat message, and the timer resets.
+// feeds her: sparkle effect, a cute chat message, and the timer moves back
+// by however much THAT dish restores (FOOD_FILL_AMOUNTS above) rather than
+// snapping straight to full - same backdating trick bumpHungerForMessage()
+// uses to decay it, just running in the other direction.
 function feedRoundbina(emoji, foodName) {
   if (isDead()) {
     addMsg("*food won't wake her now...* She needs to be revived first - open ⚙️ settings.", "system-msg");
     return;
   }
-  localStorage.setItem(LS.LAST_FED, String(Date.now()));
+  const priorHunger = computeHunger(localStorage.getItem(LS.LAST_FED));
+  const fill = FOOD_FILL_AMOUNTS[foodName] !== undefined ? FOOD_FILL_AMOUNTS[foodName] : FOOD_FILL_DEFAULT;
+  const newHunger = clamp0to100(priorHunger + fill);
+  localStorage.setItem(LS.LAST_FED, String(backdateForValue(HUNGER_DECAY_MS, newHunger)));
   spawnSparkle(portrait);
   sfxFeed();
   renderStatusBars(); // reflect the reset immediately, don't wait for a reply
@@ -5516,6 +5622,173 @@ function triggerSamuraiDefense() {
     scenariosModal.classList.toggle("open", shouldOpen);
     scenariosBackdrop.classList.toggle("open", shouldOpen);
   };
+
+  // ---- Craft a Story ------------------------------------------------------
+  // Bigger sibling to Scenarios above: instead of a one-time nudge that the
+  // model reacts to once and the context window eventually pushes out,
+  // picking a genre here generates a compact (~100-token) setting core that
+  // rides along in getSystemPrompt() on EVERY reply for as long as the
+  // story stays active - so the world stays consistent turn after turn
+  // instead of drifting. Entirely per-character (see the STORY_* keys on
+  // LS_PER_CHARACTER_BASE) - switching to another Roundie shows THEIR own
+  // story state, never this one, and ending one never touches another's.
+  const STORY_GENRES = [
+    { id: "fantasy",    emoji: "🗡️", label: "Fantasy Adventure",   seed: "a high-fantasy world of kingdoms, magic, and quests" },
+    { id: "scifi",      emoji: "🚀", label: "Sci-Fi Frontier",     seed: "a far-future setting of space travel, colonies, and strange technology" },
+    { id: "cozy",       emoji: "🍂", label: "Cozy Slice-of-Life",  seed: "a warm, low-stakes everyday setting - a small town, a shared home, ordinary life" },
+    { id: "mystery",    emoji: "🔍", label: "Mystery & Noir",      seed: "a moody mystery/noir setting full of secrets, suspicion, and something worth investigating" },
+    { id: "horror",     emoji: "🕯️", label: "Supernatural Horror", seed: "an eerie, unsettling gothic or supernatural setting - keep it atmospheric and tense, not gory" },
+    { id: "postapoc",   emoji: "☢️", label: "Post-Apocalyptic",    seed: "a world after some kind of collapse - scarcity, ruins, and getting by together" },
+    { id: "pirates",    emoji: "🏴‍☠️", label: "High Seas Pirates",  seed: "a swashbuckling pirate setting - a ship, the open ocean, and adventure" },
+    { id: "school",     emoji: "🎒", label: "School Life",         seed: "an everyday school/academy setting - classes, friendships, small dramas" },
+    { id: "cyberpunk",  emoji: "🌆", label: "Cyberpunk City",      seed: "a neon-lit cyberpunk megacity of corporations, hackers, and street-level survival" },
+    { id: "historical", emoji: "🏰", label: "Historical Romance",  seed: "a period historical setting - courtly manners, letters, and old-fashioned romance" }
+  ];
+
+  const storyBackdrop = document.getElementById("storyBackdrop");
+  const storyModal = document.getElementById("storyModal");
+  const storyStatusEl = document.getElementById("storyStatus");
+  const storyGenreGridEl = document.getElementById("storyGenreGrid");
+  const storyBadgeEl = document.getElementById("storyBadge");
+
+  function isStoryActive() {
+    return localStorage.getItem(LS.STORY_ACTIVE) === "true" && !!localStorage.getItem(LS.STORY_CORE);
+  }
+  function getActiveStoryGenre() {
+    const id = localStorage.getItem(LS.STORY_GENRE);
+    return STORY_GENRES.find((g) => g.id === id) || null;
+  }
+
+  // Small always-visible pill next to the mood badge so it's obvious at a
+  // glance a story is running, without having to open the modal - tapping
+  // it just opens the modal (same place you'd end or restart it).
+  function renderStoryBadge() {
+    if (!storyBadgeEl) return;
+    const genre = isStoryActive() ? getActiveStoryGenre() : null;
+    if (genre) {
+      storyBadgeEl.style.display = "inline-flex";
+      storyBadgeEl.textContent = `${genre.emoji} ${genre.label}`;
+    } else {
+      storyBadgeEl.style.display = "none";
+    }
+  }
+
+  function renderStoryModal() {
+    if (storyStatusEl) {
+      if (isStoryActive()) {
+        const genre = getActiveStoryGenre();
+        const core = localStorage.getItem(LS.STORY_CORE) || "";
+        storyStatusEl.innerHTML = "";
+        const card = document.createElement("div");
+        card.className = "storyStatusCard";
+        const title = document.createElement("div");
+        title.className = "storyStatusTitle";
+        title.textContent = `${genre ? genre.emoji : "📖"} ${genre ? genre.label : "Active story"} - in progress with ${getCharacter().name}`;
+        const body = document.createElement("div");
+        body.className = "storyStatusCore";
+        body.textContent = core;
+        const endBtn = document.createElement("button");
+        endBtn.className = "iconBtn";
+        endBtn.textContent = "🛑 End story";
+        endBtn.addEventListener("click", endStory);
+        card.appendChild(title);
+        card.appendChild(body);
+        card.appendChild(endBtn);
+        storyStatusEl.appendChild(card);
+      } else {
+        storyStatusEl.innerHTML = '<div class="historyMeta">No story running for this Roundie right now - pick a genre below to start one.</div>';
+      }
+    }
+    if (storyGenreGridEl) {
+      storyGenreGridEl.innerHTML = "";
+      STORY_GENRES.forEach((g) => {
+        const btn = document.createElement("button");
+        btn.className = "storyGenreBtn";
+        btn.innerHTML = `<span class="storyGenreEmoji">${g.emoji}</span><span class="storyGenreLabel">${g.label}</span>`;
+        btn.addEventListener("click", () => craftStory(g.id));
+        storyGenreGridEl.appendChild(btn);
+      });
+    }
+  }
+
+  window.toggleStoryModal = function toggleStoryModal(forceState) {
+    const shouldOpen = typeof forceState === "boolean" ? forceState : !storyModal.classList.contains("open");
+    if (shouldOpen) {
+      toggleSettingsDrawer(false);
+      renderStoryModal();
+    }
+    storyModal.classList.toggle("open", shouldOpen);
+    storyBackdrop.classList.toggle("open", shouldOpen);
+  };
+
+  // Generates a fresh ~100-token setting core for the given genre and
+  // starts the story. Overwrites whatever story (if any) was already
+  // running for this character - starting a new one always replaces the
+  // old core rather than stacking them.
+  async function craftStory(genreId) {
+    if (isBothMode()) {
+      showErrorToast("Craft a Story is per-character right now - switch to a solo chat first.");
+      return;
+    }
+    if (!connected) { showErrorToast("Connect an API key first so she can dream this up."); return; }
+    const genre = STORY_GENRES.find((g) => g.id === genreId);
+    if (!genre) return;
+
+    if (storyGenreGridEl) storyGenreGridEl.querySelectorAll("button").forEach((b) => (b.disabled = true));
+    if (storyStatusEl) storyStatusEl.innerHTML = `<div class="historyMeta">✨ crafting a ${genre.label.toLowerCase()} setting...</div>`;
+
+    const char = getCharacter();
+    const messages = [
+      { role: "system", content: "You write tight, evocative scene-setting premises for a roleplay chat app. Given a genre and a character, invent ONE cohesive story setting: where things currently stand, the overall tone, and a concrete hook for what's happening right now. Write it as a note ABOUT the character, second person (\"You are...\"), present tense. About 80-110 words, flowing prose only - no headers, no markdown, no dialogue, no meta-commentary about it being a prompt or a game." },
+      { role: "user", content: `Genre: ${genre.label} - ${genre.seed}\nCharacter: ${char.name} (${char.subtitle}${char.lore ? ", " + char.lore : ""})\nInvent the story setting now.` }
+    ];
+    const result = await callCharacterCompletion(messages, 220);
+
+    if (storyGenreGridEl) storyGenreGridEl.querySelectorAll("button").forEach((b) => (b.disabled = false));
+
+    if (!result.ok) {
+      showErrorToast(result.text.replace(/^⚠️\s*/, ""));
+      renderStoryModal();
+      return;
+    }
+
+    const core = result.raw.trim();
+    localStorage.setItem(LS.STORY_ACTIVE, "true");
+    localStorage.setItem(LS.STORY_GENRE, genre.id);
+    localStorage.setItem(LS.STORY_CORE, core);
+    renderStoryModal();
+    renderStoryBadge();
+    toggleStoryModal(false);
+
+    if (isDead()) {
+      addMsg(`📖 Story ready for when she's revived: ${genre.emoji} ${genre.label}`, "system-msg");
+      return;
+    }
+    performAction(
+      `📖 New story begins: ${genre.emoji} ${genre.label}`,
+      `[STORY BEGINS] A new ongoing story setting has just been established (you'll keep receiving it every turn). Shift into it right away and open the scene in character, as if it's genuinely happening right now - don't summarize or explain the setting back, just start living in it.`
+    );
+  }
+
+  // Stops feeding the story core into future prompts. Deliberately leaves
+  // the chat log itself untouched - this ends the STORY, not the
+  // conversation, same as how Scenarios never clears history either.
+  function endStory() {
+    if (!isStoryActive()) { toggleStoryModal(false); return; }
+    const genre = getActiveStoryGenre();
+    localStorage.removeItem(LS.STORY_ACTIVE);
+    localStorage.removeItem(LS.STORY_GENRE);
+    localStorage.removeItem(LS.STORY_CORE);
+    renderStoryModal();
+    renderStoryBadge();
+    toggleStoryModal(false);
+    if (!isDead()) {
+      performAction(
+        `🛑 Story ended${genre ? `: ${genre.emoji} ${genre.label}` : ""}`,
+        `[STORY ENDS] The story setting has just ended. Acknowledge it winding down in character, however feels natural, then settle back into ordinary present-day conversation with the person going forward.`
+      );
+    }
+  }
 
   // ---- Backup / restore save data ----------------------------------------
   // Everything (chat history, stats, affection, a remembered key) lives
