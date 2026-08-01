@@ -84,25 +84,31 @@ const LS_PER_CHARACTER_BASE = {
   LAST_SHOWERED:"lastShowered",// timestamp of last shower - cleanliness decays off this the same way hunger decays off LAST_FED
   IS_DEAD:      "isDead",      // "true" once she's gone unfed too long
   DIED_AT:      "diedAt",      // timestamp of death, for flavor/records
-  HUNGER:       "hunger",      // 0 (full) .. 100 (starving)
+  HUNGER:       "hunger",      // no longer read/written - kept only so an old save doesn't throw on a stale key. (Its own name is misleading now anyway: the REAL hunger value, computeHunger() below, actually runs 100=full down to 0=starving - the opposite of what this dead key's original 0-full/100-starving convention implied.)
 
   // Hunger and cleanliness bars: purely real-elapsed-time decay off
   // LAST_FED/LAST_SHOWERED above (see computeHunger()/computeCleanliness()
-  // near STATUS_HUNGER below) - never asked of the model at all. Affection
-  // and mood are still tracked here, but are now derived locally from the
-  // PERSON's own message text (see scoreMessageMood() further down)
-  // instead of a hidden tag the model has to self-report every turn. This
-  // used to all ride on one fragile {{STATUS ...}} tag the model had to
-  // emit, in the exact format, on literally every single reply - which is
-  // exactly what "frozen bars" meant: one missed/malformed tag (more
-  // common than it should be, especially on weaker or heavily-constrained
-  // models) and everything downstream just silently stopped moving. None
-  // of the fields below can freeze that way anymore, since none of them
-  // wait on the model to say anything at all.
+  // near STATUS_HUNGER below) - never asked of the model at all, ever, full
+  // stop. Affection and mood are tracked here too, but are derived locally
+  // FIRST, instantly, from the PERSON's own message text (see
+  // scoreMessageMood() further down) - that baseline alone is already
+  // enough to keep both moving every message, with zero dependency on the
+  // model saying anything. This used to all ride on one fragile
+  // {{STATUS ...}} tag the model had to emit, in the exact format, on
+  // literally every single reply - which is exactly what "frozen bars"
+  // meant: one missed/malformed tag (more common than it should be,
+  // especially on weaker or heavily-constrained models) and everything
+  // downstream just silently stopped moving. Mood alone now has one
+  // additional, purely OPTIONAL layer on top of that local baseline: the
+  // model's own read of how it feels, via a small hidden tag (see
+  // MOOD_TAG_INSTRUCTION/parseAndApplyMoodTag further down) that only ever
+  // refines an already-current value - if it's missing or garbled, mood
+  // simply stays at whatever the local baseline already had it at. Nothing
+  // below waits on the model, or can freeze if the model stays silent.
   STATUS_HUNGER: "statusHunger", // no longer read/written - kept only so an old save doesn't throw on a stale key
   STATUS_CLEAN:  "statusClean",  // no longer read/written - kept only so an old save doesn't throw on a stale key
   STATUS_AFFECTION: "statusAffection", // 0 (hurt/withdrawn) .. 100 (adoring) - tracks how she's been treated
-  STATUS_MOOD:   "statusMood",   // free-text mood word, now chosen locally rather than reported by the model
+  STATUS_MOOD:   "statusMood",   // free-text mood word - chosen locally every message (scoreMessageMood), optionally refined by the model's own {{MOOD word}} tag (parseAndApplyMoodTag)
   USER_THEME:    "userTheme",    // manual theme pick ("auto" or a THEME_PRESETS key), per character
 
   // Rolling conversation summary (see "Conversation summarization" section
@@ -132,6 +138,14 @@ const AWAY_GAP_MS     = 5 * 60 * 1000;      // 5m+ away  -> triggers an AI-gener
 const DEATH_GAP_MS    = 48 * 60 * 60 * 1000; // 48h+ unfed -> she dies and needs reviving
 const HUNGER_RATE_MS  = 10 * 60 * 1000;     // +1 hunger point per 10 minutes away
 const HUNGER_MAX      = 100;
+// A real absence, not just a quiet minute mid-conversation - past this, she
+// genuinely starts to miss them (see applyAbsenceMoodDrift() near
+// applyPassiveMoodDrift() below). Deliberately much longer than AWAY_GAP_MS
+// above, which just governs the one-off "welcome back" AI greeting - this
+// instead governs her actual mood word, entirely locally, so it's honest
+// even before any greeting/reply fires.
+const LONELY_GAP_MS   = 4 * 60 * 60 * 1000;  // 4h+  since the last real exchange -> starts to feel lonely
+const SAD_GAP_MS      = 20 * 60 * 60 * 1000; // 20h+ since the last real exchange -> genuinely sad about the silence
 
 const DEFAULT_MAX_TOKENS = 300; // was 150 - too small, cut replies off mid-sentence
 const MIN_MAX_TOKENS     = 60;
@@ -462,11 +476,33 @@ let needsKillInstructionThisTurn = false;
 
 // (Mood used to need a "re-evaluate every turn" reminder here, plus
 // per-character overrides below for Rone/Ecchino specifically, because it
-// was the model's job to self-report it via the hidden tag. Now that mood/
-// affection are derived locally from the person's own message text (see
-// scoreMessageMood() further down), none of that nudging is needed
-// anymore - it updates itself, every message, with zero chance of going
-// stale from the model just not mentioning it.)
+// was the model's job to self-report it via the hidden tag. Mood/affection
+// are still derived locally FIRST, instantly, from the person's own message
+// text (see scoreMessageMood() further down) - that baseline can never go
+// stale, tag or no tag. MOOD_TAG_INSTRUCTION below adds a second, optional
+// layer on top of that baseline: the model's own read of how it genuinely
+// feels, which can catch things plain keyword-matching can't - sarcasm,
+// context, everything actually said across the conversation. It's a
+// refinement, not a dependency - see parseAndApplyMoodTag() near the other
+// hidden-tag parsers for exactly how little trusting it costs if it's
+// missing or garbled.)
+const MOOD_TAG_INSTRUCTION = `
+
+---
+You also privately track your own genuine emotional state - separate from
+whatever tone the person is using, since it can agree with them or not.
+Weigh everything you actually know right now: the conversation itself, how
+hungry/clean you currently are, how long it's actually been since you last
+heard from them, and anything else that's happened. At the end of every
+single reply, on its own line, report it with a hidden tag (before any
+{{STATUS ...}} tag this character also uses, if it has one - that one
+still needs to stay the very last thing):
+{{MOOD word}}
+...where word is ONE genuine feeling word - your own words are fine (happy,
+grumpy, lonely, smitten, restless, hurt, whatever actually fits the
+moment), it does not need to match anything said out loud, and it should
+carry over from what you last felt unless something genuinely shifted it.
+This is never shown to the person and never mentioned or explained.`;
 
 // Format every reply like this worked example (a real name, not the
 // literal placeholder) - avoids reinforcing the earlier bug where a model
@@ -502,7 +538,7 @@ function getSystemPrompt() {
   const steeringPart = modelSteeringNotes.trim()
     ? `\n\n---\n[Model-specific instructions - follow these strictly, they exist because this particular model needs the extra nudge:]\n${modelSteeringNotes.trim()}`
     : "";
-  return base + tierNote + killPart + buildStatusInstruction(char) + FORMAT_INSTRUCTION + EFFECT_INSTRUCTION + steeringPart;
+  return base + tierNote + killPart + buildStatusInstruction(char) + MOOD_TAG_INSTRUCTION + FORMAT_INSTRUCTION + EFFECT_INSTRUCTION + steeringPart;
 }
 
 // ---- AI-narrated status bars (hunger / cleanliness / affection) ----------
@@ -599,6 +635,26 @@ function computeCleanliness(lastShoweredRaw) {
   return clamp0to100(100 - Math.floor((elapsed / CLEAN_DECAY_MS) * 100));
 }
 
+// BUG FIX: computeHunger()/computeCleanliness() above are meant to be pure
+// functions of elapsed real time, safe to recompute on every read - but
+// characterStatus.hunger/.cleanliness were only ever actually SET once,
+// inside loadCharacterStatus() (boot + character-switch), then just
+// repainted from that same aging in-memory snapshot everywhere else -
+// including the periodic 60s repaint interval and the "reflect the reset
+// immediately" comments in feedRoundbina()/showerRoundbina(), both of
+// which assumed this was already happening. This re-derives both off the
+// live timestamps on an EXISTING status object in place, so callers that
+// already hold a reference (renderStatusBars() in particular - see below)
+// can cheaply stay honest without a full reload that would also disturb
+// affection/mood (which have their own separate, event-driven timing -
+// see applyPassiveMoodDrift()/applyAbsenceMoodDrift() and the comment on
+// renderStatusBars() for why those are deliberately NOT re-derived here).
+function refreshDecayedStats(status) {
+  status.hunger = computeHunger(localStorage.getItem(LS.LAST_FED));
+  status.cleanliness = computeCleanliness(localStorage.getItem(LS.LAST_SHOWERED));
+  return status;
+}
+
 // Backdates a timestamp so computeHunger()/computeCleanliness() reads out
 // to approximately `targetValue` right now, instead of full (100). Used
 // by revival, which wants her to come back weak rather than instantly at
@@ -624,6 +680,18 @@ function backdateForValue(decayMs, targetValue) {
 // missing tag could. An ordinary neutral message that matches nothing
 // simply leaves mood/affection exactly where they were - which is the
 // correct behavior, not a bug (real feelings don't swing on every line).
+//
+// Two things layer on top of this local baseline, both still with the same
+// "can never freeze anything" guarantee:
+//   - applyAbsenceMoodDrift() below - entirely local, no model needed -
+//     pulls mood toward lonely/sad the longer it's actually been since the
+//     last real exchange, so leaving her alone for a long stretch shows.
+//   - parseAndApplyMoodTag() (near the other hidden-tag parsers further
+//     down) - the model's OWN read of how it feels, via a small optional
+//     tag (see MOOD_TAG_INSTRUCTION above), refining this baseline with
+//     real conversational understanding a regex can't have. If that tag
+//     is missing or doesn't resolve to anything recognizable, this local
+//     baseline is still exactly what's showing - nothing is lost.
 const MOOD_SIGNAL_PATTERNS = [
   // [pattern, mood word, affection delta] - checked in order, first match
   // wins, so the strongest/most specific signals are listed first.
@@ -678,6 +746,33 @@ function applyPassiveMoodDrift(status, lastMessageAtRaw) {
   return status;
 }
 
+// Companion to applyPassiveMoodDrift() above, but for the MOOD WORD itself
+// rather than the affection number - being ignored for a genuinely long
+// stretch should show up as "she's obviously a little lonely/sad", even
+// with an otherwise-devoted relationship, not just as affection quietly
+// drifting toward baseline. Entirely local and immediate (LONELY_GAP_MS/
+// SAD_GAP_MS above) - no model call needed, so it's honest the instant the
+// app is reopened, before any greeting or reply has had a chance to fire.
+//
+// Deliberately one-directional: this only ever pulls mood DOWN toward
+// lonely/sad, never up past it. Being ignored can't make her MORE thrilled
+// than she already was, and if she's already sadder than plain loneliness
+// (MOOD_LEVEL below that target - something more specific and worse
+// already happened), generic loneliness shouldn't cheer that back up
+// either. Comparing MOOD_LEVEL values (rather than jumping straight to the
+// target) is what gives it that one-way-only behavior for free.
+function applyAbsenceMoodDrift(status, lastMessageAtRaw) {
+  const lastMessageAt = lastMessageAtRaw ? parseInt(lastMessageAtRaw, 10) : null;
+  if (!lastMessageAt) return status;
+  const gapMs = Date.now() - lastMessageAt;
+  const targetMood = gapMs >= SAD_GAP_MS ? "sad" : gapMs >= LONELY_GAP_MS ? "lonely" : null;
+  if (!targetMood) return status;
+  const targetLevel = MOOD_LEVEL[targetMood];
+  const currentLevel = MOOD_LEVEL[status.mood] !== undefined ? MOOD_LEVEL[status.mood] : 100;
+  if (currentLevel > targetLevel) status.mood = targetMood;
+  return status;
+}
+
 function loadCharacterStatus() {
   const affection = parseInt(localStorage.getItem(LS.STATUS_AFFECTION), 10);
   const mood = localStorage.getItem(LS.STATUS_MOOD);
@@ -687,7 +782,10 @@ function loadCharacterStatus() {
     affection: Number.isFinite(affection) ? affection : 65,
     mood: mood || "happy"
   };
-  return applyPassiveMoodDrift(status, localStorage.getItem(LS.LAST_MESSAGE_AT));
+  const lastMessageAtRaw = localStorage.getItem(LS.LAST_MESSAGE_AT);
+  applyPassiveMoodDrift(status, lastMessageAtRaw);
+  applyAbsenceMoodDrift(status, lastMessageAtRaw);
+  return status;
 }
 
 let characterStatus = loadCharacterStatus();
@@ -779,6 +877,67 @@ function parseAndApplyKillTag(text) {
   return { text: cleaned, verdict };
 }
 
+// ---- Hybrid mood: the model's own read, layered on the local baseline ----
+// scoreMessageMood()/applyLocalMoodSignal() above are simple, instant, and
+// can never fail to fire - but they're pattern-matching the PERSON's
+// outgoing text, so they can't catch sarcasm, context, or anything that
+// actually requires understanding the conversation. This lets the model
+// ALSO report how it genuinely feels, via the small hidden tag described in
+// MOOD_TAG_INSTRUCTION above - if present and it resolves to a real mood
+// word (via the same resolveMoodKey() fuzzy matching used everywhere else
+// in this file), it refines the local guess with something far more
+// contextually aware. If it's missing, malformed, or just doesn't resolve
+// to anything recognizable, this silently changes nothing - mood simply
+// stays whatever the local scorer (or the last resolved value) already had
+// it at. Same tolerant, can-never-freeze-anything contract as every other
+// hidden tag in this file.
+//
+// Two-tier match: MOOD_TAG_OWN_LINE_RE tries the shape the model was
+// actually told to use first - the leading (?:^|\n) consumes the line
+// break before the tag, while the trailing (?=\n|$) only *asserts* one is
+// there without consuming it, so deleting the whole match cleanly removes
+// the line with exactly one separator left behind, never a blank line.
+// MOOD_TAG_INLINE_RE is the plain fallback (touches no surrounding
+// whitespace) for whenever a model doesn't put it on its own line - still
+// found and stripped either way, just without the tidy line cleanup.
+const MOOD_TAG_OWN_LINE_RE = /(?:^|\n)[ \t]*\{\{\s*MOOD\s+([a-zA-Z][a-zA-Z '-]{0,30})\}\}[ \t]*(?=\n|$)/i;
+const MOOD_TAG_INLINE_RE = /\{\{\s*MOOD\s+([a-zA-Z][a-zA-Z '-]{0,30})\}\}/i;
+
+// Small, deliberate nudge (never a jump) toward the affection level
+// MOOD_LEVEL associates with an LLM-refined mood report - lets a genuinely
+// nuanced read (sarcasm, context, everything the regex-based scorer above
+// can't see) gently correct affection over a few turns, the same modest
+// order of magnitude as MOOD_SIGNAL_PATTERNS' own deltas above, without
+// letting one single reply swing it wildly the way fully trusting a
+// self-reported number used to.
+const MOOD_TAG_AFFECTION_NUDGE = 5;
+function nudgeAffectionTowardMood(status, moodKey) {
+  const target = MOOD_LEVEL[moodKey];
+  if (target === undefined) return;
+  const diff = target - status.affection;
+  const step = Math.sign(diff) * Math.min(Math.abs(diff), MOOD_TAG_AFFECTION_NUDGE);
+  status.affection = clamp0to100(status.affection + step);
+}
+
+// Mutates `status` in place if a resolvable {{MOOD word}} tag is found,
+// and always returns the text with the tag (if any) stripped out - safe to
+// call unconditionally on any reply, from any character/context, since a
+// miss just means `applied: false` and status is left untouched.
+function parseAndApplyMoodTag(text, status) {
+  let match = text.match(MOOD_TAG_OWN_LINE_RE);
+  if (!match) match = text.match(MOOD_TAG_INLINE_RE);
+  if (!match) return { text, applied: false };
+  const cleaned = (text.slice(0, match.index) + text.slice(match.index + match[0].length))
+    .replace(/[ \t]{2,}/g, " ")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+  const key = resolveMoodKey(match[1]);
+  if (!key) return { text: cleaned, applied: false };
+  status.mood = key;
+  nudgeAffectionTowardMood(status, key);
+  return { text: cleaned, applied: true };
+}
+
 const hungerFillEl = document.getElementById("hungerFill");
 const cleanFillEl = document.getElementById("cleanFill");
 const hungerIconEl = document.getElementById("hungerIcon");
@@ -852,10 +1011,15 @@ const MOOD_EMOJI = {
 const NEUTRAL_FALLBACK_EMOJI = "😐";
 
 // Same mood words as MOOD_EMOJI above, mapped to a 0-100 affection value
-// instead of a face. This is what actually drives the affection bar now -
-// the model no longer reports affection as its own separate number, so the
-// bar and the mood emoji are always reading off the exact same word and
-// can never disagree or drift apart.
+// instead of a face. Affection itself is still tracked as its own number
+// (see STATUS_AFFECTION/scoreMessageMood), NOT read directly off this
+// table - but this is what nudgeAffectionTowardMood() and
+// applyAbsenceMoodDrift() below both use as a reference scale: the former
+// to gently pull affection toward whatever an LLM-refined mood implies,
+// the latter to compare how "bad" a current mood already is against a
+// lonely/sad target before deciding whether absence should darken it
+// further. Also still what keeps a resolved mood word's emoji/expression
+// internally consistent with how positive/negative that word actually is.
 const MOOD_LEVEL = {
   adoring: 97, smitten: 96, loving: 93, affectionate: 90, devoted: 92,
   infatuated: 94, enamored: 93, besotted: 95, swooning: 94, cherished: 91,
@@ -2100,7 +2264,9 @@ function bothStatusKey(id, base) {
 // of them. Hunger/cleanliness are computed fresh from her own LAST_FED/
 // LAST_SHOWERED timestamps (same formula as the solo path); affection/mood
 // are her own persisted values plus the same passive drift-toward-baseline
-// the solo path applies.
+// AND absence-based loneliness drift the solo path applies (see
+// applyPassiveMoodDrift()/applyAbsenceMoodDrift() above) - so a companion
+// left out of the room for a long stretch genuinely shows it too.
 function loadStatusForCharacterId(id) {
   const affection = parseInt(localStorage.getItem(bothStatusKey(id, "statusAffection")), 10);
   const mood = localStorage.getItem(bothStatusKey(id, "statusMood"));
@@ -2110,7 +2276,10 @@ function loadStatusForCharacterId(id) {
     affection: Number.isFinite(affection) ? affection : 65,
     mood: mood || "happy"
   };
-  return applyPassiveMoodDrift(status, localStorage.getItem(bothStatusKey(id, "lastMessageAt")));
+  const lastMessageAtRaw = localStorage.getItem(bothStatusKey(id, "lastMessageAt"));
+  applyPassiveMoodDrift(status, lastMessageAtRaw);
+  applyAbsenceMoodDrift(status, lastMessageAtRaw);
+  return status;
 }
 
 function saveStatusForCharacterId(id, status) {
@@ -2329,7 +2498,7 @@ function bothClearTranscript() {
 // OpenAI-style messages array: their own past lines are "assistant", every
 // other speaker's lines are "user" (name-prefixed so they can tell Rone's
 // voice apart from the person's).
-function buildBothMessagesFor(charId) {
+function buildBothMessagesFor(charId, preloadedStatus) {
   const char = CHARACTERS[charId];
   const others = getBothParticipants().filter(id => id !== charId).map(id => CHARACTERS[id]).filter(Boolean);
   const othersNames = others.map(o => o.name);
@@ -2348,9 +2517,13 @@ actions, or hidden status tag for them - only your own. Feel free to address
 ${othersNames.length > 1 ? "any of them" : namesList} by name and react to what they just said,
 since they're right there with you. Keep each reply short (1-3 sentences) -
 this is a fast, natural back-and-forth, not a monologue.`;
-  const sysPrompt = basePrompt + groupNote + buildStatusInstruction(char) + FORMAT_INSTRUCTION;
+  const sysPrompt = basePrompt + groupNote + buildStatusInstruction(char) + MOOD_TAG_INSTRUCTION + FORMAT_INSTRUCTION;
+  const status = preloadedStatus || loadStatusForCharacterId(charId);
 
-  const messages = [{ role: "system", content: sysPrompt }];
+  const messages = [
+    { role: "system", content: sysPrompt },
+    { role: "system", content: buildStatusNoteFromStatus(char, status) }
+  ];
   const recent = bothTranscript.slice(-24);
   recent.forEach(entry => {
     if (entry.speaker === charId) {
@@ -2623,7 +2796,8 @@ with a gift, entirely your own call. Keep it short (1-3 sentences), and don't
 write ${activeChar.name}'s reaction for her - only your own entrance.`;
 
   const messages = [
-    { role: "system", content: basePrompt + interruptNote + buildStatusInstruction(intruder) + FORMAT_INSTRUCTION + EFFECT_INSTRUCTION },
+    { role: "system", content: basePrompt + interruptNote + buildStatusInstruction(intruder) + MOOD_TAG_INSTRUCTION + FORMAT_INSTRUCTION + EFFECT_INSTRUCTION },
+    { role: "system", content: buildStatusNoteFromStatus(intruder, status) },
     { role: "user", content: `[Barge in on ${activeChar.name}'s conversation now.]` }
   ];
 
@@ -2631,10 +2805,13 @@ write ${activeChar.name}'s reaction for her - only your own entrance.`;
   if (!result.ok) return; // ambient background feature - fail quietly, no nagging popup for something the person didn't ask for
   if (isBothMode() || activeCharacterId !== activeId) return; // they switched away mid-flight - don't drop this into the wrong chat
 
-  // Reuses the exact same {{STATUS mood=...}} tag her normal replies use,
-  // so her expression here is driven by her own actual in-character
-  // reaction, not a guess - same mechanism Roundboth already relies on.
-  const textWithoutStatus = parseStatusTagForCharacter(stripThinkingTags(result.raw), status, intruder);
+  // Her expression here is driven by her own actual in-character reaction,
+  // not a guess: parseAndApplyMoodTag() picks up the {{MOOD word}} tag
+  // MOOD_TAG_INSTRUCTION asked for above (same mechanism the solo/Roundboth
+  // paths use), THEN parseStatusTagForCharacter() picks up any extra-bar
+  // {{STATUS ...}} tag this character also uses, if any.
+  const moodResult = parseAndApplyMoodTag(stripThinkingTags(result.raw), status);
+  const textWithoutStatus = parseStatusTagForCharacter(moodResult.text, status, intruder);
   saveStatusForCharacterId(intruderId, status);
   const cleanText = stripStrayTags(parseAndApplyEffectTag(textWithoutStatus, intruderId));
   if (!cleanText) return;
@@ -2759,7 +2936,8 @@ async function callCharacterCompletion(messages, maxTokensOverride) {
 // so far. Updates and persists THAT character's own hunger/affection/mood
 // exactly like a normal solo reply would.
 async function bothCharacterTurn(charId) {
-  const messages = buildBothMessagesFor(charId);
+  const status = loadStatusForCharacterId(charId);
+  const messages = buildBothMessagesFor(charId, status);
   showTyping();
   const result = await callCharacterCompletion(messages);
   hideTyping();
@@ -2767,8 +2945,8 @@ async function bothCharacterTurn(charId) {
     showErrorToast(result.text.replace(/^⚠️\s*/, ""));
     return false;
   }
-  const status = loadStatusForCharacterId(charId);
-  const afterStatus = parseStatusTagForCharacter(stripThinkingTags(result.raw), status, CHARACTERS[charId]) || "*is quiet for a moment*";
+  const moodResult = parseAndApplyMoodTag(stripThinkingTags(result.raw), status);
+  const afterStatus = parseStatusTagForCharacter(moodResult.text, status, CHARACTERS[charId]) || "*is quiet for a moment*";
   const cleanText = stripStrayTags(parseAndApplyEffectTag(afterStatus, charId));
   saveStatusForCharacterId(charId, status);
   addBothMsg(charId, cleanText);
@@ -3142,6 +3320,7 @@ function applyBothModeTheme() {
 }
 
 function renderStatusBars() {
+  refreshDecayedStats(characterStatus); // hunger/cleanliness: always re-derive from elapsed time before painting, never trust a possibly-stale in-memory snapshot (see refreshDecayedStats() near computeHunger/computeCleanliness for why this used to go stale)
   const stats = getCharStats(getCharacter());
   if (hungerFillEl) hungerFillEl.style.transform = `scaleY(${characterStatus.hunger / 100})`;
   if (cleanFillEl) cleanFillEl.style.transform = `scaleY(${characterStatus.cleanliness / 100})`;
@@ -3276,7 +3455,77 @@ function buildTimeSinceLastMessageNote() {
   if (gapMs < 60 * 1000) return null; // too short to matter, keeps rapid chatting lean
   return `[Real-world time check: ${formatElapsed(gapMs)} have actually passed since your ` +
     `last message, and it is currently ${getTimeOfDayPhrase()}. Let this genuinely inform ` +
-    `your hunger/cleanliness drift and your tone this turn. Never mention this note itself.]`;
+    `your tone and how it feels to hear from them again - your actual hunger/cleanliness/mood ` +
+    `right now are reported separately below. Never mention this note itself.]`;
+}
+
+// ---- Hunger/cleanliness/mood -> the model: the other half of the hybrid --
+// Hunger, cleanliness, and the local half of mood are deliberately still
+// owned ENTIRELY client-side (see computeHunger()/computeCleanliness()/
+// scoreMessageMood() above) rather than trusting the model to report them -
+// that's exactly the "frozen bars" bug this app already moved away from
+// once (see the LS_PER_CHARACTER_BASE comment near the top). What WAS
+// still missing: the model was never actually TOLD the real numbers during
+// ordinary conversation - only the vague note above, which measures time
+// since the last MESSAGE (not since she was actually last fed/washed) and
+// says nothing about mood at all. So her dialogue had no way to
+// organically reflect any of them. This closes that gap: real current
+// numbers, in, every turn, in plain language, so her tone/word choice/what
+// she brings up unprompted can genuinely track how she's actually doing -
+// while the numbers themselves stay exactly as reliable as they already
+// were, and feeding/showering (which reset LAST_FED/LAST_SHOWERED before
+// this note is ever built - see feedRoundbina()/showerRoundbina()) show up
+// here automatically, same turn, with no bespoke wiring needed.
+function describeLevel(value, tiers) {
+  for (const [min, desc] of tiers) {
+    if (value >= min) return desc;
+  }
+  return tiers[tiers.length - 1][1];
+}
+// Both scales run 100 (just attended to) down to 0 (badly neglected) - same
+// direction computeHunger()/computeCleanliness() already use.
+const HUNGER_DESCRIPTIONS = [
+  [85, "full and content, just fed"],
+  [60, "comfortably fed"],
+  [40, "starting to get a little hungry"],
+  [22, "noticeably hungry, thinking about food"],
+  [10, "quite hungry, a bit irritable or distracted by it"],
+  [0,  "starving, hard to focus on much else"]
+];
+const CLEANLINESS_DESCRIPTIONS = [
+  [85, "fresh and clean, just washed"],
+  [60, "still clean"],
+  [40, "a little rumpled, could use a wash soon"],
+  [22, "noticeably grubby"],
+  [10, "quite dirty, a bit self-conscious about it"],
+  [0,  "filthy, in real need of a wash"]
+];
+
+// Builds the note from an already-loaded status object for a given
+// character - used directly by Roundboth/interruptions, which each load
+// their own status independently (see loadStatusForCharacterId()).
+function buildStatusNoteFromStatus(char, status) {
+  const stats = getCharStats(char);
+  const hungerDesc = describeLevel(status.hunger, HUNGER_DESCRIPTIONS);
+  const cleanDesc = describeLevel(status.cleanliness, CLEANLINESS_DESCRIPTIONS);
+  return `[Your current state - let this genuinely color your tone, word ` +
+    `choice, and what you bring up unprompted this turn, gradually and ` +
+    `naturally rather than forcing it into every line (a bit peckish ` +
+    `shouldn't derail a reply about something more urgent; genuinely ` +
+    `starving or filthy should be hard to ignore). Never state these ` +
+    `numbers or mention this note itself.\n` +
+    `- ${stats.bar1.label}: ${status.hunger}/100 (${hungerDesc})\n` +
+    `- ${stats.bar2.label}: ${status.cleanliness}/100 (${cleanDesc})\n` +
+    `- Your current mood: ${status.mood}]`;
+}
+
+// Solo-mode convenience wrapper - refreshes the live characterStatus first
+// (see refreshDecayedStats() near computeHunger/computeCleanliness) so this
+// is always honest even if renderStatusBars() hasn't happened to run yet
+// this turn.
+function buildCharacterStatusNote(char) {
+  refreshDecayedStats(characterStatus);
+  return buildStatusNoteFromStatus(char, characterStatus);
 }
 
 const chatContainer = document.getElementById("chat");
@@ -4377,8 +4626,10 @@ function rollbackDanglingUserTurn() {
 // can tell whether chatHistory actually gained a new assistant entry.
 async function fetchCompletionFromHistory() {
   const timeNote = buildTimeSinceLastMessageNote();
+  const statusNote = buildCharacterStatusNote(getCharacter());
   const messages = [{ role: "system", content: getSystemPrompt() }];
   if (timeNote) messages.push({ role: "system", content: timeNote });
+  messages.push({ role: "system", content: statusNote });
   messages.push(...buildContextMessages());
 
   const payload = {
@@ -4444,11 +4695,15 @@ async function fetchCompletionFromHistory() {
       return { ok: false, error: `Got an empty reply back from the model. Raw response: ${debugSnippet}` };
     }
 
-    // Pull the hidden {{STATUS ...}} tag out for display, but keep the raw
-    // botText (tag included) in chatHistory below - that way the model can
-    // see its own last-reported hunger/cleanliness on the next turn and
-    // keep the drift consistent instead of guessing from scratch each time.
-    let strippedText = parseAndApplyStatusTag(botText);
+    // Pull the hidden {{MOOD word}} tag first (unanchored - finds it
+    // wherever it actually is), THEN {{STATUS ...}} (anchored to the very
+    // end - see STATUS_TAG_RE), so a model that gets the order slightly
+    // wrong still parses correctly either way. Keep the raw botText (tags
+    // included) in chatHistory below - that way the model can see its own
+    // last-reported mood/hunger/cleanliness on the next turn and keep
+    // things consistent instead of guessing from scratch each time.
+    const moodResult = parseAndApplyMoodTag(botText, characterStatus);
+    let strippedText = parseAndApplyStatusTag(moodResult.text);
     strippedText = stripStrayTags(parseAndApplyEffectTag(strippedText));
     if (!strippedText) strippedText = "*fidgets, unsure what to say*";
 
@@ -4463,6 +4718,8 @@ async function fetchCompletionFromHistory() {
     chatHistory.push({ role: "assistant", content: botText });
     saveApiHistory();
     localStorage.setItem(LS.LAST_MESSAGE_AT, String(Date.now()));
+    saveCharacterStatus(); // persists characterStatus.mood/.affection - picks up parseAndApplyMoodTag's refinement above whether or not it actually fired
+    renderStatusBars(); // reflect it immediately rather than waiting on some unrelated future repaint
     lastResponseWasSuccessful = true;
     maybeUpdateConversationSummary(); // fire-and-forget - see its own comment for why this isn't awaited
     return { ok: true, text: displayText };
@@ -4730,10 +4987,14 @@ chatInput.addEventListener("keydown", (e) => {
 
 // ---- 6. AI-GENERATED RETURN GREETINGS ------------------------------------
 // Instead of picking a canned line, we hand the model the real elapsed gap
-// and let it improvise an in-character reaction - which also naturally
-// feeds into its hunger/cleanliness/mood tag (see STATUS_INSTRUCTION), so
-// "I was gone 6 hours" produces a hungrier, grumpier Roundbina on its own
-// rather than a separate hardcoded message.
+// (buildTimeSinceLastMessageNote()) AND her real current hunger/
+// cleanliness/mood (buildCharacterStatusNote(), plus applyAbsenceMoodDrift()
+// having likely already nudged that mood toward lonely/sad locally by this
+// point - see loadCharacterStatus()) and let it improvise a genuinely
+// grounded in-character reaction, optionally refining her mood further via
+// the {{MOOD word}} tag (see MOOD_TAG_INSTRUCTION/parseAndApplyMoodTag) -
+// so "I was gone 6 hours" produces a hungrier, grumpier, lonelier Roundbina
+// on its own rather than a separate hardcoded message.
 //
 // Catch: the API key is memory-only and never persisted, so on a fresh page
 // load we're always disconnected until the person re-enters it. If a
@@ -4851,6 +5112,15 @@ document.addEventListener("visibilitychange", () => {
     const hiddenAtRaw = localStorage.getItem(LS.HIDDEN_AT);
     if (hiddenAtRaw && !isBothMode()) {
       const gap = now - parseInt(hiddenAtRaw, 10);
+      // Re-derive her whole status fresh off real elapsed time before
+      // anything else below - this is what makes "gone too long -> she's
+      // visibly lonely/sad" (applyAbsenceMoodDrift) and honest hunger/
+      // cleanliness bars show up the instant the app is reopened, even
+      // when it was just backgrounded rather than fully reloaded (a full
+      // reload already gets this for free via loadCharacterStatus() at
+      // boot - this covers the other, more common case).
+      characterStatus = loadCharacterStatus();
+      renderStatusBars();
       if (checkForDeath()) {
         addMsg(`💔 It's been far too long since ${getCharacter().name} was fed... she's gone still and quiet. She'll need to be revived to wake up again.`, "system-msg");
       } else if (gap > AWAY_GAP_MS && !isDead()) {
