@@ -873,12 +873,12 @@
     display: flex;
     flex-direction: column;
     box-sizing: border-box;
-    /* FIX: the drawer had no scroll of its own, so once Theme/API
-       key/proxy/model/prompt sections were all added the bottom ones were
-       simply clipped off-screen with no way to reach them. overflow-y:auto
-       here plus min-height:0 on the section list below lets the drawer's
-       body scroll while it stays pinned to the right edge. */
-    overflow: hidden;
+    /* The scrolling itself happens in .drawerBody (flex:1; min-height:0;
+       overflow-y:auto below), which lets drawerHeader stay pinned while
+       the rest scrolls. This wrapper must NOT be overflow:hidden, or it
+       clips drawerBody's scroll area and nothing below the fold is
+       reachable - that was the actual bug. */
+    overflow: visible;
   }
   .settingsDrawer.open { transform: translateX(0); }
 
