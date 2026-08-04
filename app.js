@@ -70,7 +70,17 @@ const LS_GLOBAL = {
   // steering notes aimed at a specific weaker/quirkier model ("always
   // finish your STATUS tag", "keep replies under 3 sentences"), not for
   // redefining who she is.
-  MODEL_STEERING:   "roundbina_modelSteering"
+  MODEL_STEERING:   "roundbina_modelSteering",
+
+  // ---- Locally-imported Roundie Gallery zips (see importRoundieZip()) ----
+  // A flat JSON array of ids, same shape as galleryIndexCache for the
+  // server-hosted roundies/index.json - just kept separate since these
+  // never touch the network. Each id's actual config (portraits already
+  // inlined as data URLs, not file paths - there's no assets/ folder to
+  // resolve them against locally) lives under its own
+  // "roundbina_localRoundie:<id>" key rather than one giant blob, so
+  // importing/removing one Roundie never has to rewrite everyone else's.
+  LOCAL_ROUNDIE_IDS: "roundbina_localRoundieIds"
 };
 
 const LS_PER_CHARACTER_BASE = {
@@ -506,16 +516,33 @@ You also privately track your own genuine emotional state - separate from
 whatever tone the person is using, since it can agree with them or not.
 Weigh everything you actually know right now: the conversation itself, how
 hungry/clean you currently are, how long it's actually been since you last
-heard from them, and anything else that's happened. At the end of every
-single reply, on its own line, report it with a hidden tag (before any
-{{STATUS ...}} tag this character also uses, if it has one - that one
-still needs to stay the very last thing):
+heard from them, and anything else that's happened.
+
+THIS IS NOT OPTIONAL. At the end of EVERY SINGLE REPLY, with NO exceptions -
+even a one-word reply, even mid-argument, even if you already reported the
+exact same feeling last turn - report it with a hidden tag on its own line
+(before any {{STATUS ...}} tag this character also uses, if it has one -
+that one still needs to stay the very last thing):
 {{MOOD word}}
 ...where word is ONE genuine feeling word - your own words are fine (happy,
 grumpy, lonely, smitten, restless, hurt, whatever actually fits the
-moment), it does not need to match anything said out loud, and it should
-carry over from what you last felt unless something genuinely shifted it.
-This is never shown to the person and never mentioned or explained.`;
+moment), it does not need to match anything said out loud. Let it move as
+much as the moment actually calls for - a single message CAN swing you from
+happy to furious, or from distant to smitten, if what was just said truly
+earns that; don't flatten a big emotional beat into a small, cautious word
+just because you were feeling something calmer a moment ago. It should only
+carry over unchanged from what you last felt when nothing genuinely shifted
+it.
+
+CRITICAL - this tag, and everything it tracks (mood, affection, hunger,
+cleanliness, any stat), is invisible bookkeeping for the app only. NEVER
+show it to the person in any form: never speak the tag itself, never state
+a number or percentage, never narrate a line like "Affection: 85" or
+"[Mood: happy]" or "my affection just went up", never explain that you're
+tracking this, never reference the mechanic even jokingly or in narration.
+Your actual reply is 100% in-character dialogue/narration - the tag is the
+ONLY place any of this bookkeeping ever appears, always on its own line,
+always exactly in the {{MOOD word}} format above.`;
 
 // Format every reply like this worked example (a real name, not the
 // literal placeholder) - avoids reinforcing the earlier bug where a model
@@ -631,8 +658,9 @@ mood or conversational tone.
 REQUIRED FORMAT - on its own line, at the very end of every single reply:
 {{STATUS ${tagExample}}}
 
-This tag is stripped out before the person ever sees it - never mention it,
-explain it, or break character to talk about it, and never skip it.`;
+This tag is invisible bookkeeping, stripped out before the person ever sees
+it - never speak it, never state its number in your actual reply, never
+explain or reference it, and never skip it, even for a one-word reply.`;
 }
 
 // ---- Hunger & cleanliness: pure elapsed-time decay -----------------------
@@ -703,6 +731,17 @@ function bumpHungerForMessage(lastFedKey) {
   localStorage.setItem(lastFedKey, String(backdateForValue(HUNGER_DECAY_MS, next)));
 }
 
+// Same idea as bumpHungerForMessage() just above, but for cleanliness -
+// getting grubby from a conversation happening (fidgeting, playing, general
+// mess) is real but should be noticeably slower than getting hungry from
+// one, hence the smaller flat drop.
+const MESSAGE_CLEAN_DECAY = 2;
+function bumpCleanlinessForMessage(lastShoweredKey) {
+  const current = computeCleanliness(localStorage.getItem(lastShoweredKey));
+  const next = clamp0to100(current - MESSAGE_CLEAN_DECAY);
+  localStorage.setItem(lastShoweredKey, String(backdateForValue(CLEAN_DECAY_MS, next)));
+}
+
 // ---- Mood & affection: derived locally from what's actually said --------
 // This replaces asking the model to self-report mood/affection via the
 // same hidden tag hunger/cleanliness used to ride on - the exact mechanism
@@ -734,15 +773,26 @@ function bumpHungerForMessage(lastFedKey) {
 //     baseline is still exactly what's showing - nothing is lost.
 const MOOD_SIGNAL_PATTERNS = [
   // [pattern, mood word, affection delta] - checked in order, first match
-  // wins, so the strongest/most specific signals are listed first.
-  [/\bi\s*love\s*(you|u)\b|\blove\s*(you|u)\s*(so much|forever|always)?\b|\badore\s*(you|u)\b|\bmy\s*(love|darling|sweetheart)\b/i, "adoring", 6],
-  [/\bgood\s*girl\b|\bso\s*proud\s*of\s*you\b|\byou'?re\s*amazing\b|\bmissed\s*(you|u)\b/i, "loving", 5],
-  [/\bthank\s*you\b|\bthanks\b|\bappreciate\s*(you|it)\b|\bso\s*(sweet|cute)\b|\byou'?re\s*the\s*best\b/i, "happy", 3],
-  [/\blol\b|\blmao\b|\bhaha+\b|\bhehe+\b|:3|xd\b/i, "playful", 2],
-  [/\bgood\s*morning\b|\bgood\s*night\b|\bsleep\s*well\b|\bsweet\s*dreams\b/i, "content", 2],
-  [/\bwhatever\b|\bmeh\b|\bboring\b|\bi\s*don'?t\s*care\b/i, "grumpy", -3],
-  [/\bstop\s*it\b|\bshut\s*up\b|\bgo\s*away\b|\bleave\s*me\s*alone\b/i, "hurt", -5],
-  [/\bi\s*hate\s*(you|u)\b|\byou'?re\s*(stupid|worthless|useless|annoying|ugly)\b|\bfuck\s*(you|off)\b/i, "hurt", -8]
+  // wins, so the strongest/most specific signals are listed first. Deltas
+  // are deliberately punchy rather than a slow crawl - a genuine "I love
+  // you" or "I hate you" should visibly move the needle in that one
+  // message, not take a dozen messages to add up to something noticeable.
+  [/\bi\s*love\s*(you|u)\b|\blove\s*(you|u)\s*(so much|forever|always)?\b|\badore\s*(you|u)\b|\bmy\s*(love|darling|sweetheart)\b/i, "adoring", 12],
+  [/\bgood\s*girl\b|\bso\s*proud\s*of\s*you\b|\byou'?re\s*amazing\b|\bmissed\s*(you|u)\b/i, "loving", 9],
+  // Comfort/support language ("I'm here", "I'm with you", "I'll help you") -
+  // its own pattern rather than folded into the love-declaration one above,
+  // since it's just as strong a signal but reads differently. Matters most
+  // via the reconciliation boost in applyLocalMoodSignal() below: this is
+  // exactly the kind of thing said WHILE she's upset, and comforting her
+  // right when she's at her lowest should count for a lot, not just add a
+  // flat number same as any other day.
+  [/\bi'?m\s*(here|with\s*you)\b|\bi'?ll\s*help\s*(you)?\b|\byou'?re\s*not\s*alone\b|\bi'?ve\s*got\s*you\b|\bit'?s\s*(going\s*to\s*be\s*)?ok(ay)?\b|\bi'?m\s*not\s*going\s*anywhere\b/i, "loving", 9],
+  [/\bthank\s*you\b|\bthanks\b|\bappreciate\s*(you|it)\b|\bso\s*(sweet|cute)\b|\byou'?re\s*the\s*best\b/i, "happy", 5],
+  [/\blol\b|\blmao\b|\bhaha+\b|\bhehe+\b|:3|xd\b/i, "playful", 3],
+  [/\bgood\s*morning\b|\bgood\s*night\b|\bsleep\s*well\b|\bsweet\s*dreams\b/i, "content", 3],
+  [/\bwhatever\b|\bmeh\b|\bboring\b|\bi\s*don'?t\s*care\b/i, "grumpy", -5],
+  [/\bstop\s*it\b|\bshut\s*up\b|\bgo\s*away\b|\bleave\s*me\s*alone\b/i, "hurt", -9],
+  [/\bi\s*hate\s*(you|u)\b|\byou'?re\s*(stupid|worthless|useless|annoying|ugly)\b|\bfuck\s*(you|off)\b/i, "hurt", -15]
 ];
 
 function scoreMessageMood(text) {
@@ -753,6 +803,19 @@ function scoreMessageMood(text) {
   }
   return null; // no clear signal in this message - leave mood/affection alone
 }
+
+// A strong, genuine "I love you"/"I'm here for you"-tier message (delta >=
+// 9 in the table above) means disproportionately more when she's actually
+// at a real low point (crying, hurt, furious...) than the same words would
+// on an ordinary day - being shown up for like that right when it's needed
+// most is a bigger deal, not a cosmetically-equal one. RECONCILIATION_LEVEL
+// is the MOOD_LEVEL ceiling that counts as "a real low point" (furious/
+// crying/heartbroken/etc all sit well under this); RECONCILIATION_TARGET/
+// FRACTION control how big that one-message turnaround actually is.
+const RECONCILIATION_MOOD_CEILING = 35;
+const RECONCILIATION_MIN_DELTA = 9;
+const RECONCILIATION_TARGET = 85;
+const RECONCILIATION_FRACTION = 0.8;
 
 // Applies a fresh message's sentiment signal (if any) to a status object in
 // place. Called the instant the PERSON's message is added to a chat -
@@ -769,6 +832,24 @@ function scoreMessageMood(text) {
 function applyLocalMoodSignal(status, text) {
   const signal = scoreMessageMood(text);
   if (!signal) return status;
+
+  const currentLevel = MOOD_LEVEL[status.mood] !== undefined ? MOOD_LEVEL[status.mood] : 100;
+  const isGenuineComfortAtALowPoint =
+    signal.delta >= RECONCILIATION_MIN_DELTA && currentLevel <= RECONCILIATION_MOOD_CEILING;
+
+  if (isGenuineComfortAtALowPoint) {
+    const diff = RECONCILIATION_TARGET - status.affection;
+    // Only ever pulls UP - if affection's somehow already above the
+    // reconciliation target despite a low mood word (an odd combination,
+    // but not impossible), just fall through to the ordinary flat delta
+    // below instead of dragging her back down.
+    if (diff > 0) {
+      status.affection = clamp0to100(status.affection + diff * RECONCILIATION_FRACTION);
+      status.mood = signal.mood;
+      return status;
+    }
+  }
+
   status.affection = clamp0to100(status.affection + signal.delta);
   status.mood = signal.mood;
   return status;
@@ -910,6 +991,29 @@ function stripStrayTags(text) {
     .trim();
 }
 
+// Second, cruder defensive layer for the same underlying problem as
+// stripStrayTags() above: sometimes a model doesn't leak the status system
+// as a malformed {{...}} tag, it leaks it as plain PROSE - narrating the
+// raw number/word straight into the reply ("Affection: 85/100", "*mood:
+// happy*", "[Hunger: 70%]") despite every instruction telling it this is
+// invisible bookkeeping the person never sees. No amount of prompting
+// eliminates this on every model/provider, so this catches the common
+// shapes of it after the fact - a standalone line that's essentially just
+// "word: value" for one of the tracked stats, or the same thing wrapped in
+// brackets/parens inline. Deliberately narrow (exact stat names only) so
+// it can't accidentally eat a line of actual in-character dialogue that
+// happens to contain one of these words in a normal sentence.
+const STATUS_LEAK_LINE_RE = /^[ \t]*\*{0,2}(?:affection|mood|hunger|cleanliness)\*{0,2}[ \t]*[:=][ \t]*[^\n]{0,40}$/gim;
+const STATUS_LEAK_BRACKET_RE = /[\[\(][ \t]*(?:affection|mood|hunger|cleanliness)[ \t]*[:=][ \t]*[^\]\)\n]{0,40}[\]\)]/gi;
+function stripLeakedStatusNarration(text) {
+  return text
+    .replace(STATUS_LEAK_LINE_RE, "")
+    .replace(STATUS_LEAK_BRACKET_RE, "")
+    .replace(/[ \t]{2,}/g, " ")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
 const KILL_TAG_RE = /\{\{\s*KILL\s+([^}]*)\}\}/i;
 function parseAndApplyKillTag(text) {
   const match = text.match(KILL_TAG_RE);
@@ -964,16 +1068,11 @@ const MOOD_TAG_INLINE_RE = /\{\{\s*MOOD\s+([a-zA-Z][a-zA-Z '-]{0,30})\}\}/i;
 //
 // The step is a FRACTION of the current gap rather than jumping straight
 // to target in one message (which would make every reply visibly snap the
-// bar and look janky) - but the fraction is high enough that a large
-// mismatch (mood suddenly says "hysterical"/MOOD_LEVEL 15 while affection
-// is still sitting up at "devoted"/92) closes almost all of that 77-point
-// gap in a turn or two, converging fully within about 3 replies, instead
-// of the old flat +/-5-a-message crawl that could take 15+ messages and
-// never actually catch up before the conversation moved on.
-// MOOD_TAG_AFFECTION_NUDGE_MIN keeps small gaps from stalling out at a
-// near-zero step as they close in on the target.
-const MOOD_TAG_AFFECTION_NUDGE_FRACTION = 0.7;
-const MOOD_TAG_AFFECTION_NUDGE_MIN = 6;
+// bar and look janky) - but the fraction is high (and the floor high
+// enough) that even a large mismatch closes almost entirely in a single
+// turn, fully converging within 1-2 replies instead of taking many.
+const MOOD_TAG_AFFECTION_NUDGE_FRACTION = 0.85;
+const MOOD_TAG_AFFECTION_NUDGE_MIN = 10;
 function nudgeAffectionTowardMood(status, moodKey) {
   const target = MOOD_LEVEL[moodKey];
   if (target === undefined) return;
@@ -1208,7 +1307,7 @@ const EXPRESSION_MAP = {
 const MOOD_KEYWORD_FALLBACKS = [
   [/ador|worship|devot|infatuat|enamou?r|besot|cherish/, "adoring"],
   [/radiant|glow|shin|luminous|blissful|euphor|beam/, "radiant"],
-  [/love|smitten|swoon|fond|tender/, "loving"],
+  [/love|smitten|swoon|fond|tender|touch|mov(ed|ing)?$|comfort|sooth|reassur|healed?|mended|understood|^safe$|^held$|^seen$/, "loving"],
   [/happ|cheer|glad|merry|sunny|chipper/, "happy"],
   [/excit|thrill|elat|joy|gleeful|giddy/, "excited"],
   [/content|cozy|satisf|grateful|thank/, "content"],
@@ -1681,16 +1780,59 @@ function buildFlatMoodTheme(theme) {
   }];
 }
 
+// ---- Locally-imported Roundie Gallery zips --------------------------------
+// Lets someone drop a Roundie .zip (the same format exportBuilderRoundie()
+// above produces) straight into their own gallery grid, entirely
+// client-side - no need to get it merged into roundies/index.json on the
+// actual server first. Portraits get inlined as data URLs at import time
+// (see importRoundieZip() below) since there's no assets/ folder on disk
+// to resolve relative paths against locally, so once imported these need
+// no network access at all, unlike the community ones.
+function getLocalRoundieIds() {
+  try { return JSON.parse(localStorage.getItem(LS.LOCAL_ROUNDIE_IDS)) || []; }
+  catch (e) { return []; }
+}
+function saveLocalRoundieIds(ids) {
+  try { localStorage.setItem(LS.LOCAL_ROUNDIE_IDS, JSON.stringify(ids)); }
+  catch (e) { console.warn("Roundbina: could not save local Roundie index", e); }
+}
+function localRoundieConfigKey(id) { return `roundbina_localRoundie:${id}`; }
+function loadLocalRoundieConfig(id) {
+  try { return JSON.parse(localStorage.getItem(localRoundieConfigKey(id))); }
+  catch (e) { return null; }
+}
+function removeLocalRoundie(id) {
+  localStorage.removeItem(localRoundieConfigKey(id));
+  saveLocalRoundieIds(getLocalRoundieIds().filter(x => x !== id));
+  delete CHARACTERS[id];
+}
+
 // Fetches one Roundie's exported config and registers her into CHARACTERS
 // under her own id, if she isn't already. Safe to call more than once for
-// the same id - only does real work the first time.
+// the same id - only does real work the first time. Checks locally-
+// imported Roundies first (no network needed, and takes priority if an id
+// somehow collides with a community one) before falling back to the
+// server-hosted roundies/<id>/<id>.json path.
 async function registerGalleryRoundie(id) {
   if (CHARACTERS[id]) return CHARACTERS[id];
+
+  const localCfg = loadLocalRoundieConfig(id);
+  if (localCfg) {
+    // Portraits were already rewritten to data URLs at import time (see
+    // importRoundieZip()) - no roundies/<id>/ path to resolve them against.
+    return registerRoundieConfig(id, localCfg, p => p || null);
+  }
+
   const res = await fetch(`roundies/${id}/${id}.json`);
   if (!res.ok) throw new Error(`couldn't load roundies/${id}/${id}.json`);
   const cfg = await res.json();
+  return registerRoundieConfig(id, cfg, p => (p ? `roundies/${id}/${p}` : null));
+}
 
-  const resolvePortrait = p => p ? `roundies/${id}/${p}` : null;
+// Shared by both the community (server-fetched) and locally-imported paths
+// above - only the portrait-path resolution differs between them, so this
+// takes that as a callback rather than duplicating everything else twice.
+function registerRoundieConfig(id, cfg, resolvePortrait) {
   const portraits = {};
   Object.keys(cfg.portraits || {}).forEach(key => {
     portraits[key] = resolvePortrait(cfg.portraits[key]);
@@ -1719,6 +1861,91 @@ async function registerGalleryRoundie(id) {
   return CHARACTERS[id];
 }
 
+// Turns a File (from the hidden #importRoundieZipInput) into a zipped
+// Roundie's config, with every assets/* portrait inlined as a data URL -
+// the same .zip shape exportBuilderRoundie() above already produces, so
+// anything built in this app's own Workshop (or someone else's copy of it)
+// round-trips straight back in.
+function mimeFromExt(filename) {
+  const ext = (filename.split(".").pop() || "").toLowerCase();
+  if (ext === "jpg" || ext === "jpeg") return "image/jpeg";
+  if (ext === "webp") return "image/webp";
+  if (ext === "gif") return "image/gif";
+  return "image/png";
+}
+
+function triggerImportRoundieZip() {
+  const input = document.getElementById("importRoundieZipInput");
+  if (input) input.click();
+}
+
+async function importRoundieZip(inputEl) {
+  const file = inputEl.files && inputEl.files[0];
+  inputEl.value = ""; // allow re-selecting the same file later
+  if (!file) return;
+
+  const grid = document.getElementById("galleryGrid");
+  const loadingMsg = document.createElement("div");
+  loadingMsg.className = "galleryLoading";
+  loadingMsg.textContent = `Importing ${file.name}…`;
+  if (grid) grid.prepend(loadingMsg);
+
+  try {
+    await ensureJSZipLoaded();
+    const zip = await JSZip.loadAsync(file);
+
+    // The config json sits at the zip root, named after its own slug
+    // (see exportBuilderRoundie() - `${slug}.json`) - find whichever
+    // top-level .json isn't inside the assets/ folder rather than
+    // assuming an exact filename, so a manually re-zipped or renamed
+    // export still works.
+    const jsonEntry = Object.values(zip.files).find(f =>
+      !f.dir && !f.name.includes("/") && f.name.toLowerCase().endsWith(".json"));
+    if (!jsonEntry) throw new Error("no config .json found at the top level of that zip");
+
+    const cfg = JSON.parse(await jsonEntry.async("text"));
+    const id = cfg.id || bSlugify(cfg.name);
+    if (!id) throw new Error("that config has no name/id to import under");
+
+    // Inline every assets/* file this config's portraits actually point
+    // to as a base64 data URL, keyed by its path exactly as written in
+    // cfg.portraits (e.g. "assets/foo-eyesopen.png") so the rewrite below
+    // is a simple lookup.
+    const inlined = {};
+    const portraitPaths = Object.values(cfg.portraits || {}).filter(Boolean);
+    for (const path of portraitPaths) {
+      const entry = zip.file(path);
+      if (!entry) continue;
+      const base64 = await entry.async("base64");
+      inlined[path] = `data:${mimeFromExt(path)};base64,${base64}`;
+    }
+    const localCfg = {
+      ...cfg,
+      portraits: Object.fromEntries(
+        Object.entries(cfg.portraits || {}).map(([key, path]) => [key, inlined[path] || null])
+      )
+    };
+
+    try {
+      localStorage.setItem(localRoundieConfigKey(id), JSON.stringify(localCfg));
+    } catch (e) {
+      // Most likely a localStorage quota error - portrait images inlined
+      // as base64 add up fast. Nothing partially written to clean up since
+      // setItem either fully succeeds or throws before writing anything.
+      throw new Error("couldn't save locally - your browser's storage is full (portrait images can be large as base64)");
+    }
+    const ids = getLocalRoundieIds();
+    if (!ids.includes(id)) { ids.push(id); saveLocalRoundieIds(ids); }
+    delete CHARACTERS[id]; // force a fresh registerGalleryRoundie() read if she was already open this session
+
+    loadingMsg.remove();
+    openRoundieGallery(); // repaint with the new card included
+  } catch (e) {
+    loadingMsg.remove();
+    showErrorToast(`Couldn't import that zip - ${e.message}`);
+  }
+}
+
 // Adds a charTab button for a gallery Roundie the first time she's opened,
 // same markup shape as the three static ones already in index.html.
 function ensureCharTabExists(id) {
@@ -1744,6 +1971,24 @@ async function openRoundieFromGallery(id) {
   }
 }
 
+function closeRoundieGallery() {
+  const modal = document.getElementById("galleryModal");
+  if (modal) modal.style.display = "none";
+}
+
+// Builds gallery card data for every locally-imported Roundie - synchronous
+// and network-free, since their full config (portraits included) already
+// lives in localStorage from import time.
+function buildLocalRoundieCards() {
+  return getLocalRoundieIds().map(id => {
+    const cfg = loadLocalRoundieConfig(id);
+    if (!cfg) return null;
+    const thumb = cfg.portraits && (cfg.portraits.cover || cfg.portraits.eyesOpen || cfg.portraits.eyesClosed);
+    return { id, name: cfg.name || id, subtitle: cfg.subtitle || "", emoji: cfg.emoji || "🌸",
+             thumbUrl: thumb || null, local: true };
+  }).filter(Boolean);
+}
+
 async function openRoundieGallery() {
   const modal = document.getElementById("galleryModal");
   const grid = document.getElementById("galleryGrid");
@@ -1754,16 +1999,19 @@ async function openRoundieGallery() {
   grid.style.display = "";
   grid.innerHTML = `<div class="galleryLoading">Loading Roundies…</div>`;
 
+  const localCards = buildLocalRoundieCards();
+  let communityCards = [];
+  let communityError = null;
+
   try {
     if (!galleryIndexCache) {
       const res = await fetch("roundies/index.json");
       galleryIndexCache = res.ok ? await res.json() : [];
     }
-    if (!galleryIndexCache.length) {
-      grid.innerHTML = `<div class="galleryLoading">No community Roundies yet - tap ➕ to build one!</div>`;
-      return;
-    }
     const cards = await Promise.all(galleryIndexCache.map(async id => {
+      // A locally-imported Roundie with the same id takes priority - skip
+      // fetching her community copy entirely.
+      if (getLocalRoundieIds().includes(id)) return null;
       try {
         const res = await fetch(`roundies/${id}/${id}.json`);
         const cfg = await res.json();
@@ -1778,24 +2026,44 @@ async function openRoundieGallery() {
         return null;
       }
     }));
-
-    grid.innerHTML = "";
-    cards.filter(Boolean).forEach(c => {
-      const card = document.createElement("button");
-      card.className = "galleryCard";
-      card.onclick = () => openRoundieFromGallery(c.id);
-      card.innerHTML = `
-        <div class="galleryThumb">${c.thumbUrl ? `<img src="${c.thumbUrl}" alt="">` : c.emoji}</div>
-        <div class="galleryName">${c.name}</div>
-        <div class="gallerySub">${c.subtitle}</div>
-        <span class="galleryAdoptBtn">🩷 Adopt</span>`;
-      grid.appendChild(card);
-    });
-    if (!grid.children.length) {
-      grid.innerHTML = `<div class="galleryLoading">No community Roundies yet - tap ➕ to build one!</div>`;
-    }
+    communityCards = cards.filter(Boolean);
   } catch (e) {
-    grid.innerHTML = `<div class="galleryLoading">Couldn't reach the gallery list right now.</div>`;
+    // Local imports still work fully offline - only the community list
+    // couldn't be reached, so don't let that blank out everything else.
+    communityError = e;
+  }
+
+  grid.innerHTML = "";
+  [...localCards, ...communityCards].forEach(c => {
+    const card = document.createElement("button");
+    card.className = "galleryCard";
+    card.onclick = () => openRoundieFromGallery(c.id);
+    card.innerHTML = `
+      ${c.local ? `<span class="galleryLocalBadge" title="Imported locally - only visible on this device">📥</span>` : ""}
+      <div class="galleryThumb">${c.thumbUrl ? `<img src="${c.thumbUrl}" alt="">` : c.emoji}</div>
+      <div class="galleryName">${c.name}</div>
+      <div class="gallerySub">${c.subtitle}</div>
+      <span class="galleryAdoptBtn">🩷 Adopt</span>`;
+    if (c.local) {
+      const removeBtn = document.createElement("button");
+      removeBtn.className = "galleryRemoveBtn";
+      removeBtn.title = "Remove this imported Roundie";
+      removeBtn.setAttribute("aria-label", `Remove ${c.name}`);
+      removeBtn.textContent = "🗑️";
+      removeBtn.onclick = (e) => {
+        e.stopPropagation();
+        removeLocalRoundie(c.id);
+        openRoundieGallery();
+      };
+      card.appendChild(removeBtn);
+    }
+    grid.appendChild(card);
+  });
+
+  if (!grid.children.length) {
+    grid.innerHTML = communityError
+      ? `<div class="galleryLoading">Couldn't reach the gallery list right now - tap ⬆️ to import a Roundie zip, or ➕ to build one!</div>`
+      : `<div class="galleryLoading">No community Roundies yet - tap ⬆️ to import one, or ➕ to build one!</div>`;
   }
 }
 
@@ -1824,7 +2092,10 @@ async function openGroupSelector() {
     }
     // Best-effort - a Roundie whose config fails to load just won't show
     // up as a candidate here, same as everywhere else that reads this list.
-    await Promise.all(galleryIndexCache.map(id => registerGalleryRoundie(id).catch(() => null)));
+    // Local ids included too, so a locally-imported Roundie can join
+    // Roundboth same as any community one, entirely offline.
+    const allIds = [...new Set([...galleryIndexCache, ...getLocalRoundieIds()])];
+    await Promise.all(allIds.map(id => registerGalleryRoundie(id).catch(() => null)));
   } catch (e) { /* fine - the already-registered ones still render below */ }
 
   groupSelectPending = new Set(getBothParticipants());
@@ -2507,9 +2778,19 @@ function addBothMsg(speaker, text, persist = true) {
         const status = loadStatusForCharacterId(id);
         applyLocalMoodSignal(status, text);
         saveStatusForCharacterId(id, status);
-        // Same flat per-message hunger drop as solo chat - see
-        // bumpHungerForMessage() near computeHunger().
-        bumpHungerForMessage(bothStatusKey(id, "lastFed"));
+        // Same wording-based instant top-up as solo chat (see
+        // applyCareWording() near feedRoundbina/showerRoundbina) - typing
+        // "*feeds everyone*" or similar satisfies whichever participant(s)
+        // it applies to, and skips their flat per-message decay this turn.
+        const careHit = applyCareWording(
+          text, bothStatusKey(id, "lastFed"), bothStatusKey(id, "lastShowered"),
+          document.getElementById(`mini-${id}-portrait`)
+        );
+        // Same flat per-message hunger/cleanliness drop as solo chat - see
+        // bumpHungerForMessage()/bumpCleanlinessForMessage() near
+        // computeHunger().
+        if (!careHit.feed) bumpHungerForMessage(bothStatusKey(id, "lastFed"));
+        if (!careHit.clean) bumpCleanlinessForMessage(bothStatusKey(id, "lastShowered"));
       });
       renderBothPortraits();
       renderBothStatusBars();
@@ -2882,7 +3163,7 @@ write ${activeChar.name}'s reaction for her - only your own entrance.`;
   const moodResult = parseAndApplyMoodTag(stripThinkingTags(result.raw), status);
   const textWithoutStatus = parseStatusTagForCharacter(moodResult.text, status, intruder);
   saveStatusForCharacterId(intruderId, status);
-  const cleanText = stripStrayTags(parseAndApplyEffectTag(textWithoutStatus, intruderId));
+  const cleanText = stripLeakedStatusNarration(stripStrayTags(parseAndApplyEffectTag(textWithoutStatus, intruderId)));
   if (!cleanText) return;
 
   const portraitSrc = pickPortraitForStatus(intruder, status);
@@ -2971,7 +3252,7 @@ async function callCharacterCompletion(messages, maxTokensOverride) {
         data = await callGoogleFallback(messages, maxTokens);
       } catch (fallbackError) {
         const detail = (fallbackError && fallbackError.message) ? fallbackError.message : String(fallbackError);
-        return { ok: false, text: `⚠️ connection snag on both the main connection and the Google fallback: ${detail}` };
+        return { ok: false, text: `⚠️ connection snag on both the main connection and the backup connection: ${detail}` };
       }
     } else {
       const detail = (error && error.message) ? error.message : String(error);
@@ -2982,10 +3263,10 @@ async function callCharacterCompletion(messages, maxTokensOverride) {
   try {
     if (data.error) {
       const msg = (data.error.message || data.error) || "unknown error";
-      return { ok: false, text: `⚠️ ${usedFallback ? "(via Google fallback) " : ""}${msg}` };
+      return { ok: false, text: `⚠️ ${usedFallback ? "(via backup connection) " : ""}${msg}` };
     }
     if (data.promptFeedback && data.promptFeedback.blockReason) {
-      return { ok: false, text: `⚠️ blocked by the provider's safety filter (${data.promptFeedback.blockReason}) - that's Google's own content policy, not an app bug.` };
+      return { ok: false, text: `⚠️ blocked by the provider's safety filter (${data.promptFeedback.blockReason}) - that's the backup provider's own content policy, not an app bug.` };
     }
     const choice = data.choices && data.choices[0];
     if (!choice) return { ok: false, text: "⚠️ got no reply back." };
@@ -3016,7 +3297,7 @@ async function bothCharacterTurn(charId) {
   }
   const moodResult = parseAndApplyMoodTag(stripThinkingTags(result.raw), status);
   const afterStatus = parseStatusTagForCharacter(moodResult.text, status, CHARACTERS[charId]) || "*is quiet for a moment*";
-  const cleanText = stripStrayTags(parseAndApplyEffectTag(afterStatus, charId));
+  const cleanText = stripLeakedStatusNarration(stripStrayTags(parseAndApplyEffectTag(afterStatus, charId)));
   saveStatusForCharacterId(charId, status);
   addBothMsg(charId, cleanText);
   renderBothStatusBars();
@@ -3110,15 +3391,26 @@ async function handleBothSend() {
   chatSendBtn.disabled = true;
   setBothControlsDisabled(true);
 
-  for (const id of getBothParticipants()) {
-    const ok = await bothCharacterTurn(id);
-    if (!ok) break; // one failed call (e.g. rate limit) - don't pile the rest on top of it
+  // BUG FIX: this used to have no try/finally - if bothCharacterTurn()
+  // (or anything it calls) threw for any reason instead of resolving to
+  // true/false, the two re-enable lines below never ran and the whole chat
+  // bar stayed disabled forever, with no error shown at all - it just
+  // looked like the app had completely stopped working. finally{} below
+  // guarantees the controls come back no matter what happens in the loop.
+  try {
+    for (const id of getBothParticipants()) {
+      const ok = await bothCharacterTurn(id);
+      if (!ok) break; // one failed call (e.g. rate limit) - don't pile the rest on top of it
+    }
+  } catch (e) {
+    console.error("Roundbina: Roundboth turn loop threw unexpectedly", e);
+    showErrorToast("Something went wrong mid-conversation - check the console for details.");
+  } finally {
+    setBothControlsDisabled(false);
+    chatInput.disabled = false;
+    chatSendBtn.disabled = false;
+    chatInput.focus();
   }
-
-  setBothControlsDisabled(false);
-  chatInput.disabled = false;
-  chatSendBtn.disabled = false;
-  chatInput.focus();
 }
 
 function enterBothMode() {
@@ -3802,7 +4094,7 @@ function saveConnectionSettings() {
     localStorage.setItem(LS.GOOGLE_API_KEY, googleApiKey);
     localStorage.setItem(LS.GOOGLE_MODEL, googleModel);
     if (fallbackEnabled && !googleApiKey) {
-      addMsg(`⚠️ Google fallback is on but no API key is set, so it won't actually work yet - grab a key at aistudio.google.com.`, "system-msg");
+      addMsg(`⚠️ backup connection is on but no API key is set, so it won't actually work yet - grab a key at aistudio.google.com.`, "system-msg");
     }
   }
 
@@ -3824,7 +4116,7 @@ function saveConnectionSettings() {
     localStorage.setItem(LS.MODEL_STEERING, modelSteeringNotes);
   }
 
-  addMsg(`⚙️ Saved! Brain is now "${newModel}" via ${newProxy}${newRelay ? ` (through relay)` : ""}${fallbackEnabled ? ` — Google fallback is on.` : ""}.`, "system-msg");
+  addMsg(`⚙️ Saved! Brain is now "${newModel}" via ${newProxy}${newRelay ? ` (through relay)` : ""}${fallbackEnabled ? ` — backup connection is on.` : ""}.`, "system-msg");
 }
 
 // Restore the reply-length slider, and keep it saved as it's dragged.
@@ -4694,12 +4986,63 @@ function rollbackDanglingUserTurn() {
 // assistant reply and calls this directly to get a fresh one for the same
 // prompt. Sets the module-level lastResponseWasSuccessful flag so callers
 // can tell whether chatHistory actually gained a new assistant entry.
+// BUG FIX: everything from buildTimeSinceLastMessageNote() down to
+// buildContextMessages() used to run OUTSIDE the try/catch below - only
+// the actual network call and response parsing were guarded. If any of
+// that prep work threw for any reason, the exception propagated straight
+// up through getAIResponse() to whichever caller was awaiting it
+// (handleChatSend, performAction, regenerateLastResponse...) - and every
+// one of those callers disables chatInput/chatSendBtn BEFORE the await and
+// only re-enables them AFTER it, with no try/finally of their own. An
+// uncaught throw there meant the re-enable code simply never ran, leaving
+// the whole chat bar permanently disabled with no error shown at all -
+// exactly a "the app just stopped working, no buttons do anything" report.
+// This is especially easy to hit via the fully-automatic paths that fire
+// with nobody actively typing - the "welcome back" greeting
+// (checkReturnAndGreet()/generateReturnGreeting(), which runs at boot and
+// on tab-foreground) chief among them, since that's the one call that
+// reliably fires on the FIRST reopen after being away for a while (like
+// overnight) but not during ordinary back-to-back chatting - matching
+// "worked fine all day, broke the next time I opened it" exactly. Renamed
+// the real implementation and wrapped it in an outer try/catch so this can
+// no longer throw at all, no matter what fails inside - it always resolves
+// to a normal {ok:false, error} result instead, same as every other
+// failure path already does.
 async function fetchCompletionFromHistory() {
+  try {
+    return await fetchCompletionFromHistoryInner();
+  } catch (error) {
+    console.error("Roundbina: fetchCompletionFromHistory threw before/outside its own network try-block", error);
+    rollbackDanglingUserTurn();
+    lastResponseWasSuccessful = false;
+    const detail = (error && error.message) ? error.message : String(error);
+    return { ok: false, error: `Something went wrong preparing that message: ${detail}` };
+  }
+}
+
+async function fetchCompletionFromHistoryInner() {
   const timeNote = buildTimeSinceLastMessageNote();
   const statusNote = buildCharacterStatusNote(getCharacter());
   const messages = [{ role: "system", content: getSystemPrompt() }];
   if (timeNote) messages.push({ role: "system", content: timeNote });
   messages.push({ role: "system", content: statusNote });
+  // A nudge (see getAIResponse(null) below) sends nothing new at all -
+  // chatHistory still ends on her own last reply rather than gaining a
+  // fake "*is here, saying nothing in particular*" user turn the way this
+  // used to work. Most chat-completion APIs are happy to just continue
+  // from wherever the transcript left off, but a bare continuation reads
+  // ambiguous to the model without a nudge of its own, so this spells out
+  // what's actually happening instead.
+  if (chatHistory.length && chatHistory[chatHistory.length - 1].role === "assistant") {
+    messages.push({
+      role: "system",
+      content: "The person hasn't sent anything new since your last message - " +
+        "there's no reply to respond to. Continue naturally on your own: keep " +
+        "going with what you were saying, act on your last thought, or notice " +
+        "the quiet if that fits better. Don't wait for or ask about input that " +
+        "isn't coming."
+    });
+  }
   messages.push(...buildContextMessages());
 
   const payload = {
@@ -4774,7 +5117,7 @@ async function fetchCompletionFromHistory() {
     // things consistent instead of guessing from scratch each time.
     const moodResult = parseAndApplyMoodTag(botText, characterStatus);
     let strippedText = parseAndApplyStatusTag(moodResult.text);
-    strippedText = stripStrayTags(parseAndApplyEffectTag(strippedText));
+    strippedText = stripLeakedStatusNarration(stripStrayTags(parseAndApplyEffectTag(strippedText)));
     if (!strippedText) strippedText = "*fidgets, unsure what to say*";
 
     // Keep this turn even if it got cut for length - it's still a valid
@@ -4812,9 +5155,17 @@ async function fetchCompletionFromHistory() {
   }
 }
 
+// Pushes a new user turn and fetches a reply, same as always - unless
+// userMessage is explicitly null (a nudge/empty send), in which case
+// nothing new is added to chatHistory at all and this just asks for a
+// continuation off whatever's already there (see the system note
+// fetchCompletionFromHistory() adds when the transcript ends on her own
+// last reply).
 async function getAIResponse(userMessage) {
-  chatHistory.push({ role: "user", content: userMessage });
-  saveApiHistory();
+  if (userMessage !== null) {
+    chatHistory.push({ role: "user", content: userMessage });
+    saveApiHistory();
+  }
   return await fetchCompletionFromHistory();
 }
 
@@ -4897,44 +5248,63 @@ function refreshKeyStatusUI() {
 async function handleChatSend() {
   if (isBothMode()) { await handleBothSend(); return; }
 
-  // Empty send is allowed on purpose now - treated as a silent "nudge" so
-  // she can react to your quiet presence instead of requiring you to
-  // always type something before she'll respond.
+  // Empty send is allowed on purpose - a quiet way to let her react to your
+  // presence (or just continue an earlier thought) without typing anything.
+  // Nothing from you actually gets added to the visible chat log or the
+  // model's context for this case - see the getAIResponse(null) branch
+  // below, which asks for a reply off the existing history as-is rather
+  // than inventing a fake "*is here, saying nothing in particular*" user
+  // turn the way this used to work.
   const rawInput = chatInput.value.trim();
   const isNudge = !rawInput;
-  const userText = isNudge ? "*is here, saying nothing in particular*" : rawInput;
 
   if (isDead()) {
-    addMsg(userText, "user");
+    if (!isNudge) addMsg(rawInput, "user");
     chatInput.value = ""; autoGrowChatInput();
     addMsg("*...silence. She doesn't stir.* She needs to be revived first - open ⚙️ settings.", "system-msg");
     return;
   }
 
-  const userDiv = addMsg(userText, "user");
+  const userDiv = isNudge ? null : addMsg(rawInput, "user");
   sfxSend();
-  // Read her mood/affection off what was ACTUALLY typed, not the synthetic
-  // "*is here, saying nothing in particular*" nudge text - a silent nudge
+  // Read her mood/affection off what was ACTUALLY typed - a silent nudge
   // has no sentiment to score. Runs immediately, before the API call even
   // starts, so the meter is honest even if the request later fails.
   if (!isNudge) {
     applyLocalMoodSignal(characterStatus, rawInput);
     saveCharacterStatus();
   }
-  // Hunger drops a flat amount per message sent, nudge or not - talking to
-  // her takes place over time same as anything else (see
-  // bumpHungerForMessage() near computeHunger() for why).
-  bumpHungerForMessage(LS.LAST_FED);
-  characterStatus.hunger = computeHunger(localStorage.getItem(LS.LAST_FED));
-  renderStatusBars();
-  const userLogIdx = Number(userDiv.dataset.logIndex);
+  // If what was actually typed reads as feeding/cleaning her (roleplay
+  // like "*breastfeeds her*" or "scrubbing you clean in the tub"), treat it
+  // like the dedicated feed/shower actions - instant full top-up for
+  // whichever stat(s) it implies - instead of just letting the flat
+  // per-message decay below run over it.
+  const careHit = isNudge ? { feed: false, clean: false }
+    : applyCareWording(rawInput, LS.LAST_FED, LS.LAST_SHOWERED);
+  // Hunger drops a flat amount per message actually sent (see
+  // bumpHungerForMessage() near computeHunger() for why) - unless she was
+  // just fed via wording above, in which case skip it so the same message
+  // doesn't feed her and immediately dock her for it. A nudge sends nothing
+  // new, so it only ever falls back to pure time-based decay, same as
+  // leaving the app closed.
+  if (!isNudge) {
+    if (!careHit.feed) bumpHungerForMessage(LS.LAST_FED);
+    // Cleanliness decays the same way, just slower (see
+    // MESSAGE_CLEAN_DECAY near bumpCleanlinessForMessage()) - same
+    // skip-if-just-cleaned logic.
+    if (!careHit.clean) bumpCleanlinessForMessage(LS.LAST_SHOWERED);
+    characterStatus.hunger = computeHunger(localStorage.getItem(LS.LAST_FED));
+    characterStatus.cleanliness = computeCleanliness(localStorage.getItem(LS.LAST_SHOWERED));
+    renderStatusBars();
+  }
+  const userLogIdx = userDiv ? Number(userDiv.dataset.logIndex) : NaN;
   chatInput.value = ""; autoGrowChatInput();
   chatInput.disabled = true;
   chatSendBtn.disabled = true;
   showTyping();
   setAwake(true);
 
-  const result = await getAIResponse(userText);
+  const result = await getAIResponse(isNudge ? null : rawInput);
   hideTyping();
   setAwake(false);
   chatInput.disabled = false;
@@ -4944,18 +5314,18 @@ async function handleChatSend() {
     // Nothing pasted into chat on failure - just a popup. The bubble that
     // never actually sent gets removed, and (for a real typed message)
     // your text goes right back in the box so nothing's lost or needs
-    // retyping. A nudge (empty send) just quietly resets instead.
-    removeLogEntryAtIndex(userLogIdx);
-    if (!isNudge) { chatInput.value = userText; autoGrowChatInput(); }
+    // retyping. A nudge never had a bubble or box text to begin with.
+    if (userDiv) removeLogEntryAtIndex(userLogIdx);
+    if (!isNudge) { chatInput.value = rawInput; autoGrowChatInput(); }
     showErrorToast(result.error);
     chatInput.focus();
     return;
   }
 
-  // Both the user turn and the reply landed in chatHistory as the last
-  // two entries - tag the bubbles so regenerate/rewind/delete/edit can
-  // find them later.
-  updateLogEntryApiIndex(userLogIdx, chatHistory.length - 2);
+  // Both the user turn and the reply landed in chatHistory as the last two
+  // entries - tag the bubble so regenerate/rewind/delete/edit can find it
+  // later. A nudge never added a user bubble, so there's nothing to tag.
+  if (userDiv) updateLogEntryApiIndex(userLogIdx, chatHistory.length - 2);
   addMsg(result.text, "bot", { apiIndex: chatHistory.length - 1 });
   sfxReceive();
   bumpInterruptCounters(activeCharacterId);
@@ -5052,13 +5422,31 @@ function autoGrowChatInput() {
 }
 chatInput.addEventListener("input", autoGrowChatInput);
 // Enter sends (matching the old single-line input's behavior); Shift+Enter
-// inserts a real newline instead, same convention as most chat apps.
+// inserts a real newline instead, same convention as most chat apps. Only
+// reliable with a physical keyboard, though - most mobile on-screen
+// keyboards' Enter/Go key doesn't carry a real shiftKey modifier at all, so
+// there's also an explicit newline button (insertChatNewline() below) for
+// anyone who can't reach this.
 chatInput.addEventListener("keydown", (e) => {
   if (e.key === "Enter" && !e.shiftKey) {
     e.preventDefault();
     handleChatSend();
   }
 });
+
+// Inserts "\n" at the current cursor position (replacing any selection,
+// same as typing would) rather than just appending to the end, then puts
+// the cursor right after it and re-triggers the auto-grow so the box
+// resizes immediately instead of waiting for the next real keystroke.
+function insertChatNewline() {
+  const start = chatInput.selectionStart;
+  const end = chatInput.selectionEnd;
+  const value = chatInput.value;
+  chatInput.value = value.slice(0, start) + "\n" + value.slice(end);
+  chatInput.selectionStart = chatInput.selectionEnd = start + 1;
+  autoGrowChatInput();
+  chatInput.focus();
+}
 
 // ---- 6. AI-GENERATED RETURN GREETINGS ------------------------------------
 // Instead of picking a canned line, we hand the model the real elapsed gap
@@ -5298,6 +5686,44 @@ function feedRoundbina(emoji, foodName) {
     `${emoji} You gave ${getCharacter().name} some ${foodName}!`,
     `*You hold out a ${foodName} ${emoji} for ${getCharacter().name} to eat*`
   );
+}
+
+// ---- Wording-based care actions --------------------------------------
+// Lets typed roleplay ("*I breastfeed her*", "scrubbing you clean in the
+// bath") satisfy hunger/cleanliness immediately, same as the dedicated
+// feed/shower buttons, instead of only reacting to the flat per-message
+// decay. Deliberately simple keyword matching (no AI round-trip) so it's
+// instant and never depends on the model remembering to report it - see
+// the big comment on buildStatusInstruction() above for why hunger/
+// cleanliness were pulled out of the model's hands entirely.
+const FEED_WORDING_RE = /\b(breast\s?feed(?:ing)?|bottle[\s-]?feed(?:ing)?|nurs(?:e|ing)|spoon[\s-]?feed(?:ing)?|feed(?:ing)?\s+(?:you|her|him|them)|give\s+(?:you|her|him|them)\s+(?:a\s+)?(?:bottle|milk|food|meal|snack))\b/i;
+const CLEAN_WORDING_RE = /\b(scrub(?:bing)?|bath(?:e|ing)?|shower(?:ing)?|wash(?:ing)?\s+(?:you|her|him|them)|clean(?:ing)?\s+(?:you|her|him|them)|wipe\s+(?:you|her|him|them)\s+down|give\s+(?:you|her|him|them)\s+(?:a\s+)?bath)\b/i;
+
+function detectCareWording(text) {
+  return {
+    feed: FEED_WORDING_RE.test(text),
+    clean: CLEAN_WORDING_RE.test(text)
+  };
+}
+
+// Applies an immediate full top-up (mirrors feedRoundbina()/
+// showerRoundbina()'s "reset the timestamp to now" trick) for whichever
+// of hunger/cleanliness the typed text implies, and returns which ones it
+// touched so the caller can skip the normal flat per-message decay for
+// those same stats this turn (getting fed and losing hunger points in the
+// very same message would be a wash).
+function applyCareWording(text, lastFedKey, lastShoweredKey, targetEl) {
+  const hit = detectCareWording(text);
+  const el = targetEl || portrait;
+  if (hit.feed) {
+    localStorage.setItem(lastFedKey, String(Date.now()));
+    if (el) spawnSparkle(el, ["🍽️", "🍼", "💗"]);
+  }
+  if (hit.clean) {
+    localStorage.setItem(lastShoweredKey, String(Date.now()));
+    if (el) spawnSparkle(el, ["💦", "🫧", "🚿"]);
+  }
+  return hit;
 }
 
 // ---- 9. DEATH & REVIVAL ---------------------------------------------------
@@ -5594,11 +6020,19 @@ function triggerSamuraiDefense() {
       chatInput.disabled = true;
       chatSendBtn.disabled = true;
       setBothControlsDisabled(true);
-      const binaOk = await bothCharacterTurn("bina");
-      if (binaOk) await bothCharacterTurn("rone");
-      setBothControlsDisabled(false);
-      chatInput.disabled = false;
-      chatSendBtn.disabled = false;
+      // Same try/finally reasoning as handleBothSend() above - guarantees
+      // the chat bar comes back even if a turn throws instead of resolving.
+      try {
+        const binaOk = await bothCharacterTurn("bina");
+        if (binaOk) await bothCharacterTurn("rone");
+      } catch (e) {
+        console.error("Roundbina: scenario turn threw unexpectedly", e);
+        showErrorToast("Something went wrong applying that scenario - check the console for details.");
+      } finally {
+        setBothControlsDisabled(false);
+        chatInput.disabled = false;
+        chatSendBtn.disabled = false;
+      }
       return;
     }
 
@@ -6133,56 +6567,106 @@ if ("serviceWorker" in navigator) {
 }
 
 // ---- 9. Boot sequence ----------------------------------------------------
+// BUG FIX: this used to be one unbroken run of calls with no error handling
+// at all - a real "app just stopped working entirely, no buttons do
+// anything" bug. If ANY single step threw (a corrupted or just
+// unexpectedly-shaped value in a long-lived profile's localStorage - a
+// streak counter, a theme, a gallery character's saved config, a chat log
+// entry, anything accumulated over "a while" of real use - things an empty
+// incognito profile would never hit), every step AFTER it in this same
+// function silently never ran, including the ones that render the status
+// bars, wire up the character switcher, and restore the chat window. The
+// page would sit there technically loaded but functionally inert, which
+// matches "no buttons or function whatsoever" exactly.
+// safeBootStep() isolates each independent chunk of startup work in its
+// own try/catch so one bad value can only ever take out that one piece
+// (logged to console for diagnosis) instead of cascading into everything
+// downstream of it never happening.
+function safeBootStep(label, fn) {
+  try {
+    return fn();
+  } catch (e) {
+    console.error(`Roundbina boot: "${label}" step failed - continuing with the rest of startup anyway`, e);
+    return undefined;
+  }
+}
+
 (function boot() {
   // If a key was remembered on this device, skip straight to the chat
   // instead of asking the person to paste it in again every single time.
-  if (apiKey) {
-    connected = true;
-    setupPanel.style.display = "none";
-    chatBar.style.display = "flex";
-    resetBtn.style.display = "inline";
-    if (rememberKeyCheckbox) rememberKeyCheckbox.checked = true;
-  }
-  refreshKeyStatusUI();
-
-  if (!localStorage.getItem(LS.LAST_FED)) {
-    localStorage.setItem(LS.LAST_FED, String(Date.now())); // start full, not starving
-  }
-  const hadHistory = restoreChatLog(); // 1. bring back yesterday's conversation, if any
-
-  const wasAlreadyDead = isDead();
-  const justDied = checkForDeath();
-  applyDeadUI(isDead());
-
-  if (isDead()) {
-    if (justDied) {
-      addMsg(`💔 It's been far too long since ${getCharacter().name} was fed... she's gone still and quiet. She'll need to be revived to wake up again.`, "system-msg");
-    } else if (wasAlreadyDead) {
-      addMsg("💔 She's still lying quiet, unrevived. Open ⚙️ settings when you're ready to bring her back.", "system-msg");
+  safeBootStep("restore remembered key", () => {
+    if (apiKey) {
+      connected = true;
+      setupPanel.style.display = "none";
+      chatBar.style.display = "flex";
+      resetBtn.style.display = "inline";
+      if (rememberKeyCheckbox) rememberKeyCheckbox.checked = true;
     }
-  }
+    refreshKeyStatusUI();
+  });
 
-  // This used to be an "else if" after the isDead() block above, which meant
-  // that once she'd been dead even once, LAST_ACTIVE stopped refreshing and
-  // the away-time check went silent for good (the reported bug). It now
-  // always runs whenever there's history, dead or alive, so the "how long
-  // was I gone" tracking never stalls - checkReturnAndGreet() itself already
-  // skips the AI greeting (but still updates LAST_ACTIVE) while she's dead.
-  if (hadHistory) {
-    // Only greet returning visitors who already have a conversation - not on
-    // the very first-ever load, where the hardcoded intro bubble is enough
-    // and an instant "good morning!"/"I missed you!" out of nowhere is odd.
-    checkReturnAndGreet();  // 6. AI reacts in character to real elapsed time away
-  } else {
-    localStorage.setItem(LS.LAST_ACTIVE, String(Date.now()));
-  }
+  safeBootStep("hunger/cleanliness init", () => {
+    if (!localStorage.getItem(LS.LAST_FED)) {
+      localStorage.setItem(LS.LAST_FED, String(Date.now())); // start full, not starving
+    }
+    // BUG FIX: this was never set on first boot at all (only LAST_FED was),
+    // so computeCleanliness()'s "no timestamp yet -> 100" fallback (see near
+    // CLEAN_DECAY_MS) meant cleanliness silently never decayed for anyone
+    // who hadn't already used the shower button at least once - it just sat
+    // pinned at 100 forever. Give it the same "start full, timestamp now"
+    // treatment LAST_FED already gets.
+    if (!localStorage.getItem(LS.LAST_SHOWERED)) {
+      localStorage.setItem(LS.LAST_SHOWERED, String(Date.now()));
+    }
+  });
 
-  initFoodTray();         // 8. mount the feeding tray + drag handlers
-  renderStatusBars();     // hunger/cleanliness (elapsed-time) + affection/mood (locally-derived) bars beside the sprite (also repaints portrait art)
-  checkAndUpdateStreak(); // app-wide daily streak, independent of either character
-  renderStreakBadges();
-  renderThemeSwatches();  // paint the theme picker + apply any saved manual theme
-  if (getUserTheme() !== "auto") applyThemeVars(THEME_PRESETS[getUserTheme()] || THEME_PRESETS.classic);
+  // hadHistory/deadNow feed later steps below - default to the safe/empty
+  // assumption if their own step failed, rather than leaving them
+  // undefined and turning every later "if (hadHistory)" into its own
+  // fresh crash.
+  const hadHistory = !!safeBootStep("restore chat log", () => restoreChatLog()); // 1. bring back yesterday's conversation, if any
+
+  const deadNow = !!safeBootStep("death check", () => {
+    const wasAlreadyDead = isDead();
+    const justDied = checkForDeath();
+    applyDeadUI(isDead());
+    if (isDead()) {
+      if (justDied) {
+        addMsg(`💔 It's been far too long since ${getCharacter().name} was fed... she's gone still and quiet. She'll need to be revived to wake up again.`, "system-msg");
+      } else if (wasAlreadyDead) {
+        addMsg("💔 She's still lying quiet, unrevived. Open ⚙️ settings when you're ready to bring her back.", "system-msg");
+      }
+    }
+    return isDead();
+  });
+
+  safeBootStep("return-greeting", () => {
+    // This used to be an "else if" after the isDead() block above, which
+    // meant that once she'd been dead even once, LAST_ACTIVE stopped
+    // refreshing and the away-time check went silent for good (the
+    // reported bug). It now always runs whenever there's history, dead or
+    // alive, so the "how long was I gone" tracking never stalls -
+    // checkReturnAndGreet() itself already skips the AI greeting (but
+    // still updates LAST_ACTIVE) while she's dead.
+    if (hadHistory) {
+      // Only greet returning visitors who already have a conversation -
+      // not on the very first-ever load, where the hardcoded intro bubble
+      // is enough and an instant "good morning!"/"I missed you!" out of
+      // nowhere is odd.
+      checkReturnAndGreet();  // 6. AI reacts in character to real elapsed time away
+    } else {
+      localStorage.setItem(LS.LAST_ACTIVE, String(Date.now()));
+    }
+  });
+
+  safeBootStep("food tray", () => initFoodTray());         // 8. mount the feeding tray + drag handlers
+  safeBootStep("status bars", () => renderStatusBars());   // hunger/cleanliness (elapsed-time) + affection/mood (locally-derived) bars beside the sprite (also repaints portrait art)
+  safeBootStep("daily streak", () => checkAndUpdateStreak()); // app-wide daily streak, independent of either character
+  safeBootStep("streak badges", () => renderStreakBadges());
+  safeBootStep("theme", () => {
+    renderThemeSwatches();  // paint the theme picker + apply any saved manual theme
+    if (getUserTheme() !== "auto") applyThemeVars(THEME_PRESETS[getUserTheme()] || THEME_PRESETS.classic);
+  });
 
   // Everything above already resolves through the per-character LS proxy,
   // so it's correct even if the person's last-active companion (persisted
@@ -6192,14 +6676,16 @@ if ("serviceWorker" in navigator) {
   // bubble if there's genuinely no history yet, and which tab looks
   // active - gets synced here so a returning Rone conversation opens
   // looking like Rone's, not a flash of Bina's chrome first.
-  const activeChar = getCharacter();
-  renderCharacterSwitcher();
-  syncCharacterHeader(activeChar);
-  const drawerTitleEl = document.querySelector(".drawerHeader h2");
-  if (drawerTitleEl) drawerTitleEl.textContent = `Settings — ${activeChar.name}`;
-  if (systemPromptInput) systemPromptInput.placeholder = `Describe how ${activeChar.name} should behave...`;
-  if (!isDead()) chatInput.placeholder = activeChar.placeholderInput;
-  if (!hadHistory) chatContainer.innerHTML = `<div class="msg bot">${introBubbleFor(activeChar)}</div>`;
+  safeBootStep("character header sync", () => {
+    const activeChar = getCharacter();
+    renderCharacterSwitcher();
+    syncCharacterHeader(activeChar);
+    const drawerTitleEl = document.querySelector(".drawerHeader h2");
+    if (drawerTitleEl) drawerTitleEl.textContent = `Settings — ${activeChar.name}`;
+    if (systemPromptInput) systemPromptInput.placeholder = `Describe how ${activeChar.name} should behave...`;
+    if (!deadNow) chatInput.placeholder = activeChar.placeholderInput;
+    if (!hadHistory) chatContainer.innerHTML = `<div class="msg bot">${introBubbleFor(activeChar)}</div>`;
+  });
 
   // Google Fonts (Quicksand/Nunito) can finish downloading a moment after
   // this initial render, and swapping from the fallback font to the real
@@ -6208,9 +6694,11 @@ if ("serviceWorker" in navigator) {
   // above. Re-snapping once the fonts actually settle (or after a short
   // fallback delay on browsers without the Font Loading API) keeps a
   // restored chat pinned to the bottom instead of drifting mid-scroll.
-  if (document.fonts && document.fonts.ready) {
-    document.fonts.ready.then(() => scrollChatToBottom());
-  } else {
-    setTimeout(scrollChatToBottom, 400);
-  }
+  safeBootStep("font-ready rescroll", () => {
+    if (document.fonts && document.fonts.ready) {
+      document.fonts.ready.then(() => scrollChatToBottom());
+    } else {
+      setTimeout(scrollChatToBottom, 400);
+    }
+  });
 })();

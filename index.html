@@ -193,131 +193,155 @@
     <div class="drawerSection">
       <button class="iconBtn" id="newChatBtn" onclick="startNewChat()">🧹 New chat</button>
     </div>
-    <div class="drawerSection">
-      <button class="iconBtn" id="viewHistoryBtn" onclick="toggleHistoryModal(true)">📜 view stored chat history</button>
-    </div>
-    <div class="drawerSection">
-      <button class="iconBtn" id="viewScenariosBtn" onclick="toggleScenariosModal(true)">🎭 scenarios</button>
-    </div>
-    <div class="drawerSection">
-      <button class="iconBtn" id="viewStoryBtn" onclick="toggleStoryModal(true)">📖 craft a story</button>
-    </div>
-    <div class="drawerSection">
-      <label>💾 backup &amp; restore</label>
-      <div class="historyMeta">Everything here (chat, stats, affection) lives only in this browser. Back it up so switching phones or clearing your cache doesn't lose her.</div>
-      <div class="backupRestoreRow">
-        <button class="iconBtn" onclick="exportSaveData()">⬇️ backup save file</button>
-        <button class="iconBtn" onclick="triggerImportSaveData()">⬆️ restore from file</button>
-      </div>
-      <input type="file" id="importFileInput" accept="application/json" style="display:none;" onchange="importSaveData(this)">
-    </div>
-    <div class="drawerSection">
-      <label>🎨 theme</label>
-      <div class="themeSwatchRow" id="themeSwatchRow"></div>
-    </div>
-    <div class="drawerSection" id="reviveSection">
-      <button class="iconBtn" id="reviveBtn" onclick="openReviveFlow()">💗 revive Roundbina</button>
-    </div>
-    <div class="drawerSection">
-      <div class="tokenControl">
-        <label for="tokenSlider">📝 reply length: <span id="tokenValue">300</span></label>
-        <input type="range" id="tokenSlider" min="60" max="800" step="20" value="300">
-      </div>
-    </div>
-    <div class="drawerSection">
-      <div class="tokenControl">
-        <label for="contextSlider">🧠 max context: <span id="contextValue">32000</span> tokens</label>
-        <input type="range" id="contextSlider" min="0" max="128000" step="1000" value="32000">
-      </div>
-    </div>
-    <div class="drawerSection">
-      <label for="settingsKeyInput">🔑 API key</label>
-      <div class="keyRow">
-        <input id="settingsKeyInput" type="password" placeholder="Paste a new API key..." autocomplete="off" />
-        <button class="iconBtn" id="toggleKeyVisibilityBtn" onclick="toggleSettingsKeyVisibility()" type="button">👁️</button>
-      </div>
-      <div class="settingsRow" style="align-items:center; gap:6px;">
-        <input type="checkbox" id="rememberKeyCheckboxSettings" style="width:auto;" />
-        <label for="rememberKeyCheckboxSettings" style="font-size:0.85em; opacity:0.8; margin:0;">remember this key on this device</label>
-      </div>
-      <div class="settingsRow" id="keyStatusRow" style="font-size:0.8em; opacity:0.7;"></div>
-      <div class="settingsRow" style="gap:8px;">
-        <button class="iconBtn" id="updateKeyBtn" onclick="updateApiKeyFromSettings()">💾 save key</button>
-        <button class="iconBtn" id="forgetKeyBtn" onclick="forgetRememberedKey()">🗑️ forget saved key</button>
-      </div>
-    </div>
-    <div class="drawerSection">
-      <label for="proxyUrlInput">🔌 proxy address (e.g. OpenRouter)</label>
-      <input id="proxyUrlInput" type="text" placeholder="https://openrouter.ai/api/v1/chat/completions" autocomplete="off" />
-    </div>
-    <div class="drawerSection">
-      <label for="relayUrlInput">🛰️ relay URL (optional)</label>
-      <input id="relayUrlInput" type="text" placeholder="https://your-relay.workers.dev" autocomplete="off" />
-      <div class="historyMeta">Only needed if your provider blocks direct browser requests (a "Failed to fetch" that isn't your key/network's fault - Cerebras doesn't need this, some others do). Leave blank otherwise.</div>
-    </div>
-    <div class="drawerSection">
-      <label for="modelNameInput">🧠 model name</label>
-      <input id="modelNameInput" type="text" placeholder="e.g. openai/gpt-4o-mini" autocomplete="off" />
-    </div>
-    <div class="drawerSection" id="systemPromptSection">
-      <label for="systemPromptInput">💬 custom personality prompt</label>
-      <textarea id="systemPromptInput" rows="6" placeholder="Describe how Roundbina should behave..."></textarea>
-    </div>
-    <div class="drawerSection">
-      <label style="display:flex; align-items:center; gap:8px; cursor:pointer;">
-        <input type="checkbox" id="soundEnabledCheckbox" style="width:auto;" checked />
-        🔔 sound effects
-      </label>
-      <div class="historyMeta">Tiny built-in chimes for sending/receiving messages, feeding, gifts, switching companions, and entering Roundgroup - no audio files, generated on the fly.</div>
-    </div>
-    <div class="drawerSection">
-      <label style="display:flex; align-items:center; gap:8px; cursor:pointer;">
-        <input type="checkbox" id="fallbackEnabledCheckbox" style="width:auto;" />
-        🛟 use Google AI Studio as a fallback
-      </label>
-      <div class="historyMeta">If the main connection above fails outright (down, overloaded, rate-limited), the app quietly retries through Google's Gemini API instead of showing an error. Needs its own free API key from <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">aistudio.google.com</a> - separate from your main key above.</div>
-      <label for="googleApiKeyInput" style="margin-top:8px;">🔑 Google AI Studio API key</label>
-      <input id="googleApiKeyInput" type="password" placeholder="AIza..." autocomplete="off" />
-      <label for="googleModelInput" style="margin-top:8px;">🧠 Google model name</label>
-      <input id="googleModelInput" type="text" placeholder="gemma-4-31b-it" autocomplete="off" />
-    </div>
-    <div class="drawerSection">
-      <label for="temperatureInput">🎛️ advanced model settings</label>
-      <div class="historyMeta">Leave any of these blank to use the provider's own default - only filled-in fields get sent. A weaker/quirkier model (Mistral, etc.) drifting off-instruction or forgetting the STATUS tag is often a temperature-too-high problem, worth trying lower (0.4–0.6) before assuming the model just can't do it.</div>
-      <div class="settingsRow" style="gap:8px; margin-top:8px;">
-        <div style="flex:1;">
-          <label for="temperatureInput" style="font-size:0.75em;">temperature</label>
-          <input id="temperatureInput" type="number" step="0.05" min="0" max="2" placeholder="0.8" />
+
+    <details class="settingsGroup" open>
+      <summary>💬 Chat &amp; roleplay</summary>
+      <div class="settingsGroupBody">
+        <div class="drawerSection">
+          <button class="iconBtn" id="viewHistoryBtn" onclick="toggleHistoryModal(true)">📜 view stored chat history</button>
         </div>
-        <div style="flex:1;">
-          <label for="topPInput" style="font-size:0.75em;">top_p</label>
-          <input id="topPInput" type="number" step="0.05" min="0" max="1" placeholder="default" />
+        <div class="drawerSection">
+          <button class="iconBtn" id="viewScenariosBtn" onclick="toggleScenariosModal(true)">🎭 scenarios</button>
+        </div>
+        <div class="drawerSection">
+          <button class="iconBtn" id="viewStoryBtn" onclick="toggleStoryModal(true)">📖 craft a story</button>
+        </div>
+        <div class="drawerSection" id="reviveSection">
+          <button class="iconBtn" id="reviveBtn" onclick="openReviveFlow()">💗 revive Roundbina</button>
         </div>
       </div>
-      <div class="settingsRow" style="gap:8px; margin-top:8px;">
-        <div style="flex:1;">
-          <label for="topKInput" style="font-size:0.75em;">top_k</label>
-          <input id="topKInput" type="number" step="1" min="0" placeholder="default" />
+    </details>
+
+    <details class="settingsGroup">
+      <summary>🎨 Backup, theme &amp; behavior</summary>
+      <div class="settingsGroupBody">
+        <div class="drawerSection">
+          <label>💾 backup &amp; restore</label>
+          <div class="historyMeta">Everything here (chat, stats, affection) lives only in this browser. Back it up so switching phones or clearing your cache doesn't lose her.</div>
+          <div class="backupRestoreRow">
+            <button class="iconBtn" onclick="exportSaveData()">⬇️ backup save file</button>
+            <button class="iconBtn" onclick="triggerImportSaveData()">⬆️ restore from file</button>
+          </div>
+          <input type="file" id="importFileInput" accept="application/json" style="display:none;" onchange="importSaveData(this)">
         </div>
-        <div style="flex:1;">
-          <label for="freqPenaltyInput" style="font-size:0.75em;">frequency penalty</label>
-          <input id="freqPenaltyInput" type="number" step="0.1" min="-2" max="2" placeholder="0" />
+        <div class="drawerSection">
+          <label>🎨 theme</label>
+          <div class="themeSwatchRow" id="themeSwatchRow"></div>
         </div>
-        <div style="flex:1;">
-          <label for="presPenaltyInput" style="font-size:0.75em;">presence penalty</label>
-          <input id="presPenaltyInput" type="number" step="0.1" min="-2" max="2" placeholder="0" />
+        <div class="drawerSection">
+          <div class="tokenControl">
+            <label for="tokenSlider">📝 reply length: <span id="tokenValue">300</span></label>
+            <input type="range" id="tokenSlider" min="60" max="800" step="20" value="300">
+          </div>
+        </div>
+        <div class="drawerSection">
+          <div class="tokenControl">
+            <label for="contextSlider">🧠 max context: <span id="contextValue">32000</span> tokens</label>
+            <input type="range" id="contextSlider" min="0" max="128000" step="1000" value="32000">
+          </div>
+        </div>
+        <div class="drawerSection">
+          <label style="display:flex; align-items:center; gap:8px; cursor:pointer;">
+            <input type="checkbox" id="soundEnabledCheckbox" style="width:auto;" checked />
+            🔔 sound effects
+          </label>
+          <div class="historyMeta">Tiny built-in chimes for sending/receiving messages, feeding, gifts, switching companions, and entering Roundgroup - no audio files, generated on the fly.</div>
         </div>
       </div>
-      <div class="historyMeta" style="margin-top:6px;">Note: top_k isn't part of the standard OpenAI schema - most OpenAI-compatible providers (Cerebras included) accept it, but a few silently ignore an unrecognized field rather than erroring, so if it seems to have no effect, that's likely why.</div>
-    </div>
-    <div class="drawerSection">
-      <label for="modelSteeringInput">🧭 extra model instructions</label>
-      <div class="historyMeta">Separate from the personality prompt above - these always get added on top instead of replacing anything, so you can steer a specific model's quirks ("always end with the STATUS tag", "keep replies short") without touching who Roundbina actually is.</div>
-      <textarea id="modelSteeringInput" rows="4" placeholder="e.g. Never forget the {{STATUS}} tag, even in a one-word reply."></textarea>
-    </div>
-    <div class="drawerSection">
-      <button class="iconBtn" id="saveConnectionBtn" onclick="saveConnectionSettings()">💾 save proxy settings</button>
-    </div>
+    </details>
+
+    <details class="settingsGroup">
+      <summary>🔌 Connection</summary>
+      <div class="settingsGroupBody">
+        <div class="drawerSection">
+          <label for="settingsKeyInput">🔑 API key</label>
+          <div class="keyRow">
+            <input id="settingsKeyInput" type="password" placeholder="Paste a new API key..." autocomplete="off" />
+            <button class="iconBtn" id="toggleKeyVisibilityBtn" onclick="toggleSettingsKeyVisibility()" type="button">👁️</button>
+          </div>
+          <div class="settingsRow" style="align-items:center; gap:6px;">
+            <input type="checkbox" id="rememberKeyCheckboxSettings" style="width:auto;" />
+            <label for="rememberKeyCheckboxSettings" style="font-size:0.85em; opacity:0.8; margin:0;">remember this key on this device</label>
+          </div>
+          <div class="settingsRow" id="keyStatusRow" style="font-size:0.8em; opacity:0.7;"></div>
+          <div class="settingsRow" style="gap:8px;">
+            <button class="iconBtn" id="updateKeyBtn" onclick="updateApiKeyFromSettings()">💾 save key</button>
+            <button class="iconBtn" id="forgetKeyBtn" onclick="forgetRememberedKey()">🗑️ forget saved key</button>
+          </div>
+        </div>
+        <div class="drawerSection">
+          <label for="proxyUrlInput">🔌 proxy address (e.g. OpenRouter)</label>
+          <input id="proxyUrlInput" type="text" placeholder="https://openrouter.ai/api/v1/chat/completions" autocomplete="off" />
+        </div>
+        <div class="drawerSection">
+          <label for="relayUrlInput">🛰️ relay URL (optional)</label>
+          <input id="relayUrlInput" type="text" placeholder="https://your-relay.workers.dev" autocomplete="off" />
+          <div class="historyMeta">Only needed if your provider blocks direct browser requests (a "Failed to fetch" that isn't your key/network's fault - Cerebras doesn't need this, some others do). Leave blank otherwise.</div>
+        </div>
+        <div class="drawerSection">
+          <label for="modelNameInput">🧠 model name</label>
+          <input id="modelNameInput" type="text" placeholder="e.g. openai/gpt-4o-mini" autocomplete="off" />
+        </div>
+        <div class="drawerSection">
+          <label style="display:flex; align-items:center; gap:8px; cursor:pointer;">
+            <input type="checkbox" id="fallbackEnabledCheckbox" style="width:auto;" />
+            🛟 use backup AI connection as a fallback
+          </label>
+          <div class="historyMeta">If the main connection above fails outright (down, overloaded, rate-limited), the app quietly retries through this backup connection instead of showing an error. Needs its own free API key from <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">aistudio.google.com</a> - separate from your main key above, and usable as a standing backup regardless of which main provider you're on.</div>
+          <label for="googleApiKeyInput" style="margin-top:8px;">🔑 backup connection API key</label>
+          <input id="googleApiKeyInput" type="password" placeholder="AIza..." autocomplete="off" />
+          <label for="googleModelInput" style="margin-top:8px;">🧠 backup connection model name</label>
+          <input id="googleModelInput" type="text" placeholder="gemma-4-31b-it" autocomplete="off" />
+        </div>
+        <div class="drawerSection">
+          <button class="iconBtn" id="saveConnectionBtn" onclick="saveConnectionSettings()">💾 save proxy settings</button>
+        </div>
+      </div>
+    </details>
+
+    <details class="settingsGroup">
+      <summary>🧠 Personality &amp; advanced</summary>
+      <div class="settingsGroupBody">
+        <div class="drawerSection" id="systemPromptSection">
+          <label for="systemPromptInput">💬 custom personality prompt</label>
+          <textarea id="systemPromptInput" rows="6" placeholder="Describe how Roundbina should behave..."></textarea>
+        </div>
+        <div class="drawerSection">
+          <label for="modelSteeringInput">🧭 extra model instructions</label>
+          <div class="historyMeta">Separate from the personality prompt above - these always get added on top instead of replacing anything, so you can steer a specific model's quirks ("always end with the STATUS tag", "keep replies short") without touching who Roundbina actually is.</div>
+          <textarea id="modelSteeringInput" rows="4" placeholder="e.g. Never forget the {{STATUS}} tag, even in a one-word reply."></textarea>
+        </div>
+        <div class="drawerSection">
+          <label for="temperatureInput">🎛️ advanced model settings</label>
+          <div class="historyMeta">Leave any of these blank to use the provider's own default - only filled-in fields get sent. A weaker/quirkier model (Mistral, etc.) drifting off-instruction or forgetting the STATUS tag is often a temperature-too-high problem, worth trying lower (0.4–0.6) before assuming the model just can't do it.</div>
+          <div class="settingsRow" style="gap:8px; margin-top:8px;">
+            <div style="flex:1;">
+              <label for="temperatureInput" style="font-size:0.75em;">temperature</label>
+              <input id="temperatureInput" type="number" step="0.05" min="0" max="2" placeholder="0.8" />
+            </div>
+            <div style="flex:1;">
+              <label for="topPInput" style="font-size:0.75em;">top_p</label>
+              <input id="topPInput" type="number" step="0.05" min="0" max="1" placeholder="default" />
+            </div>
+          </div>
+          <div class="settingsRow" style="gap:8px; margin-top:8px;">
+            <div style="flex:1;">
+              <label for="topKInput" style="font-size:0.75em;">top_k</label>
+              <input id="topKInput" type="number" step="1" min="0" placeholder="default" />
+            </div>
+            <div style="flex:1;">
+              <label for="freqPenaltyInput" style="font-size:0.75em;">frequency penalty</label>
+              <input id="freqPenaltyInput" type="number" step="0.1" min="-2" max="2" placeholder="0" />
+            </div>
+            <div style="flex:1;">
+              <label for="presPenaltyInput" style="font-size:0.75em;">presence penalty</label>
+              <input id="presPenaltyInput" type="number" step="0.1" min="-2" max="2" placeholder="0" />
+            </div>
+          </div>
+          <div class="historyMeta" style="margin-top:6px;">Note: top_k isn't part of the standard OpenAI schema - most OpenAI-compatible providers (Cerebras included) accept it, but a few silently ignore an unrecognized field rather than erroring, so if it seems to have no effect, that's likely why.</div>
+        </div>
+      </div>
+    </details>
     </div>
   </div>
 
@@ -414,7 +438,8 @@
   </div>
 
   <div class="inputBar" id="chatBar" style="display:none;">
-    <textarea id="chatInput" placeholder="Say something to Roundbina..." autocomplete="off" rows="1"></textarea>
+    <textarea id="chatInput" placeholder="Say something to Roundbina...  (Shift+Enter for a new line)" autocomplete="off" rows="1"></textarea>
+    <button id="chatNewlineBtn" class="newlineBtn" onclick="insertChatNewline()" aria-label="New line" title="New line">⏎</button>
     <button id="chatSendBtn" onclick="handleChatSend()">Send</button>
   </div>
 </div>
@@ -430,10 +455,12 @@
     <div class="galleryHeader">
       <h2 id="galleryHeaderTitle">Roundie Gallery</h2>
       <div style="display:flex; gap:4px; align-items:center;">
+        <button class="galleryClose" id="galleryImportBtn" onclick="triggerImportRoundieZip()" aria-label="Import a Roundie zip" title="Import a Roundie zip">⬆️</button>
         <button class="galleryClose" id="galleryPlusBtn" onclick="openRoundieBuilder()" aria-label="Build a new Roundie" title="Build a new Roundie">➕</button>
         <button class="galleryClose" onclick="closeRoundieGallery()" aria-label="Close">✕</button>
       </div>
     </div>
+    <input type="file" id="importRoundieZipInput" accept=".zip,application/zip" style="display:none;" onchange="importRoundieZip(this)">
     <div class="galleryGrid" id="galleryGrid"></div>
 
     <!-- ---- Workshop (in-app Roundie Builder) ----

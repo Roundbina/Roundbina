@@ -778,6 +778,18 @@
     padding: 0 20px; border-radius: 22px; cursor: pointer; font-size: 14px;
     height: 45px; flex-shrink: 0;
   }
+  /* Secondary, smaller button next to Send - inserts a newline in chatInput
+     without submitting. Exists mainly for mobile: on-screen keyboards'
+     Enter/Go key doesn't reliably carry a shiftKey modifier, so Shift+Enter
+     (the desktop convention below) isn't reachable there at all - this
+     gives everyone an explicit way to add a line break. */
+  .inputBar .newlineBtn {
+    background: rgba(255,255,255,0.12);
+    color: #fff;
+    font-weight: normal;
+    padding: 0 14px;
+    font-size: 16px;
+  }
   button:disabled { background: #5a4552; color: #8a7393; cursor: default; }
   button:active { transform: scale(0.96); }
   input:focus-visible, textarea:focus-visible, select:focus-visible, button:focus-visible {
@@ -966,6 +978,46 @@
     display: flex;
     flex-direction: column;
     gap: 8px;
+  }
+
+  /* ---- Settings accordion groups ----
+     Wraps related .drawerSection blocks in a native <details>/<summary> so
+     the drawer isn't just one long unbroken scroll - collapsed by default
+     (except the first, most-used group) and expands on tap. Native
+     <details> gives this for free with no extra JS to wire up. */
+  .settingsGroup {
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 12px;
+    background: rgba(255,255,255,0.02);
+    overflow: hidden;
+  }
+  .settingsGroup summary {
+    list-style: none;
+    cursor: pointer;
+    padding: 12px 14px;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--accent-light);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .settingsGroup summary::-webkit-details-marker { display: none; }
+  .settingsGroup summary::after {
+    content: "›";
+    font-size: 18px;
+    color: var(--muted);
+    transform: rotate(90deg);
+    transition: transform .2s ease;
+  }
+  .settingsGroup[open] summary::after { transform: rotate(270deg); }
+  .settingsGroup summary:hover { background: rgba(255,255,255,0.04); }
+  .settingsGroupBody {
+    display: flex;
+    flex-direction: column;
+    gap: 18px;
+    padding: 2px 14px 16px;
   }
   .drawerSection .tokenControl label { white-space: normal; }
   .drawerSection .iconBtn {
@@ -1561,6 +1613,7 @@
     padding: 30px 10px;
   }
   .galleryCard {
+    position: relative;
     display: flex; flex-direction: column; align-items: center;
     background: rgba(255,255,255,0.04);
     border: 1px solid rgba(255,255,255,0.07);
@@ -1571,6 +1624,21 @@
     font-family: inherit;
     transition: transform .15s var(--ease-elastic), background .2s ease;
   }
+  /* Marks a card as coming from a locally-imported zip (see
+     importRoundieZip()) rather than the shared community list - she only
+     lives in this browser's storage, so it's worth flagging that up front. */
+  .galleryLocalBadge {
+    position: absolute; top: 6px; left: 6px;
+    font-size: 12px; line-height: 1; opacity: 0.85;
+  }
+  .galleryRemoveBtn {
+    position: absolute; top: 4px; right: 4px;
+    background: rgba(0,0,0,0.35); border: none; border-radius: 50%;
+    width: 22px; height: 22px; font-size: 11px; cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+    color: var(--text);
+  }
+  .galleryRemoveBtn:hover { background: rgba(0,0,0,0.55); }
   .galleryCard:hover { background: rgba(255,255,255,0.08); transform: translateY(-2px); }
   .galleryCard:active { transform: scale(var(--press-scale)); }
   .galleryThumb {
