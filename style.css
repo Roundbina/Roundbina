@@ -873,12 +873,7 @@
     display: flex;
     flex-direction: column;
     box-sizing: border-box;
-    /* The scrolling itself happens in .drawerBody (flex:1; min-height:0;
-       overflow-y:auto below), which lets drawerHeader stay pinned while
-       the rest scrolls. This wrapper must NOT be overflow:hidden, or it
-       clips drawerBody's scroll area and nothing below the fold is
-       reachable - that was the actual bug. */
-    overflow: visible;
+    overflow: hidden;
   }
   .settingsDrawer.open { transform: translateX(0); }
 
@@ -990,6 +985,15 @@
     border-radius: 12px;
     background: rgba(255,255,255,0.02);
     overflow: hidden;
+    /* .settingsGroup is a flex item inside .drawerBody's flex column.
+       overflow:hidden on a flex item makes its automatic min-height
+       resolve to 0 instead of its content size (flexbox spec), so once
+       opened it was getting squashed down to ~15-40px instead of its real
+       (100s of px) content height - nothing ever actually overflowed
+       .drawerBody, so there was nothing to scroll. flex-shrink:0 stops it
+       from being crushed and lets the real content height push
+       .drawerBody into genuine overflow, which it already scrolls. */
+    flex-shrink: 0;
   }
   .settingsGroup summary {
     list-style: none;
