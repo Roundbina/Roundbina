@@ -158,7 +158,56 @@
         <span class="menuItemIcon">⬆️</span>
         <span>Restore from file</span>
       </button>
+      <button type="button" class="menuListItem" onclick="toggleBgCreatorModal(true); toggleMenuDrawer(false);">
+        <span class="menuItemIcon">🎨</span>
+        <span>Create a background</span>
+      </button>
     </div>
+  </div>
+
+  <div class="historyBackdrop" id="bgCreatorBackdrop" onclick="toggleBgCreatorModal(false)"></div>
+  <div class="historyModal" id="bgCreatorModal">
+    <div class="historyModalHeader">
+      <h2>🎨 Create a Background</h2>
+      <button class="drawerCloseBtn" onclick="toggleBgCreatorModal(false)" aria-label="Close background creator">✕</button>
+    </div>
+    <div class="historyMeta">Pick your own colors instead of a preset - it'll show up as its own swatch next to Auto/Sakura/etc. in ⚙️ settings → theme, and you can make as many as you like.</div>
+
+    <div class="bgCreatorPreview" id="bgCreatorPreview">
+      <div class="bgCreatorPreviewBubble" id="bgCreatorPreviewBubble">Preview</div>
+      <button type="button" class="bgCreatorPreviewBtn" id="bgCreatorPreviewBtn">Accent</button>
+    </div>
+
+    <div class="drawerSection">
+      <label for="bgCreatorNameInput">📛 name</label>
+      <input type="text" id="bgCreatorNameInput" placeholder="My Background" maxlength="24" autocomplete="off" />
+    </div>
+    <div class="bgCreatorColorGrid">
+      <div class="bgCreatorColorField">
+        <label for="bgCreatorTop">Top</label>
+        <input type="color" id="bgCreatorTop" value="#3a2b3f" />
+      </div>
+      <div class="bgCreatorColorField">
+        <label for="bgCreatorBottom">Bottom</label>
+        <input type="color" id="bgCreatorBottom" value="#1b1420" />
+      </div>
+      <div class="bgCreatorColorField">
+        <label for="bgCreatorAccent">Accent</label>
+        <input type="color" id="bgCreatorAccent" value="#ff8fb1" />
+      </div>
+      <div class="bgCreatorColorField">
+        <label for="bgCreatorBubble">Bubble</label>
+        <input type="color" id="bgCreatorBubble" value="#4a3453" />
+      </div>
+    </div>
+    <div class="historyModalActions">
+      <button class="iconBtn" id="bgCreatorSaveBtn" onclick="saveCustomBackground()">💾 save &amp; use</button>
+    </div>
+
+    <div class="historyModalHeader" style="margin-top:18px;">
+      <h2 style="font-size:15px;">Your backgrounds</h2>
+    </div>
+    <div id="bgCreatorSavedList"></div>
   </div>
 
   <div class="historyBackdrop" id="streakBackdrop" onclick="toggleStreakModal(false)"></div>
@@ -438,8 +487,7 @@
   </div>
 
   <div class="inputBar" id="chatBar" style="display:none;">
-    <textarea id="chatInput" placeholder="Say something to Roundbina...  (Shift+Enter for a new line)" autocomplete="off" rows="1"></textarea>
-    <button id="chatNewlineBtn" class="newlineBtn" onclick="insertChatNewline()" aria-label="New line" title="New line">⏎</button>
+    <textarea id="chatInput" placeholder="Say something to Roundbina..." autocomplete="off" rows="1"></textarea>
     <button id="chatSendBtn" onclick="handleChatSend()">Send</button>
   </div>
 </div>

@@ -1,6 +1,9 @@
 // Roundbina service worker - caches the app shell so it still works
 // offline, while always preferring the freshest version when online.
-const CACHE_NAME = "roundbina-cache-v2"; // bumped - forces one clean cache reset
+const CACHE_NAME = "roundbina-cache-v3"; // bumped again - the v2 cache had been silently
+// serving stale files ever since the clone() bug above started swallowing every
+// network fetch into the .catch() fallback. Bumping forces one clean reset so
+// everyone actually gets the fixed files instead of whatever got stuck in v2.
 const APP_SHELL = [
   "./index.html",
   "./style.css",
@@ -42,7 +45,22 @@ self.addEventListener("fetch", (event) => {
   event.respondWith(
     fetch(event.request)
       .then((networkResponse) => {
-        caches.open(CACHE_NAME).then((cache) => cache.put(event.request, networkResponse.clone()));
+        // BUG FIX: clone() must happen synchronously, the instant the
+        // response arrives - NOT inside the nested caches.open().then().
+        // caches.open() is itself async, so by the time that inner .then()
+        // ran, the browser had often already started streaming
+        // networkResponse's body to the page (since this whole promise
+        // chain's return value goes straight to event.respondWith()).
+        // Once a Response's body has started being read, .clone() throws
+        // "Failed to execute 'clone' on 'Response': Response body is
+        // already used" - and because that throw happened inside a .then(),
+        // it was swallowed by the .catch() below, which then served the
+        // OLD CACHED FILES instead of the fresh network ones. That's why
+        // app.js fixes never appeared to take effect: every load was
+        // silently falling back to a stale cached copy. Cloning here,
+        // before any further async work, avoids the race entirely.
+        const responseClone = networkResponse.clone();
+        caches.open(CACHE_NAME).then((cache) => cache.put(event.request, responseClone));
         return networkResponse;
       })
       .catch(() => caches.match(event.request))

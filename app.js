@@ -72,6 +72,15 @@ const LS_GLOBAL = {
   // redefining who she is.
   MODEL_STEERING:   "roundbina_modelSteering",
 
+  // ---- Custom backgrounds (see the hamburger menu's "Create a
+  // background" creator / saveCustomBackground()) - a flat JSON array of
+  // {id, label, bgTop, bgBottom, accent, accentLight, muted, botBubble,
+  // accentRgb, bgTopRgb, swatch} objects, shared across every character
+  // (like THEME_PRESETS itself) rather than per-character - what's
+  // actually SELECTED per character still goes through the existing
+  // per-character USER_THEME key, this just holds the definitions.
+  CUSTOM_THEMES: "roundbina_customThemes",
+
   // ---- Locally-imported Roundie Gallery zips (see importRoundieZip()) ----
   // A flat JSON array of ids, same shape as galleryIndexCache for the
   // server-hosted roundies/index.json - just kept separate since these
@@ -889,6 +898,63 @@ function applyPassiveMoodDrift(status, lastMessageAtRaw) {
 // already happened), generic loneliness shouldn't cheer that back up
 // either. Comparing MOOD_LEVEL values (rather than jumping straight to the
 // target) is what gives it that one-way-only behavior for free.
+// BUG FIX: MOOD_LEVEL used to be declared ~350 lines further down (right
+// before getMoodEmoji()), but applyAbsenceMoodDrift() right below reads it
+// too - and that function runs from loadCharacterStatus() at raw top-level
+// (see "let characterStatus = loadCharacterStatus()" a few lines down),
+// not from inside any function body called later. Since MOOD_LEVEL is a
+// `const`, referencing it before its own declaration line has actually run
+// throws "Cannot access 'MOOD_LEVEL' before initialization" - a real
+// ReferenceError, not hypothetical. That only happened once someone had
+// gone 4+ hours since their last message (LONELY_GAP_MS below), which is
+// exactly why it worked fine for active chatting and on a brand-new
+// install (no last-message timestamp yet -> early return, never reaches
+// this line) but reliably broke for anyone reopening the app after being
+// away a while. And because this crash happens in a bare top-level
+// statement near the very TOP of the whole script, when it threw, every
+// single line below it - the entire rest of the file, including the whole
+// boot() sequence at the bottom - never ran at all. That's "no buttons or
+// anything work whatsoever": not one button broke, none of them were ever
+// wired up (or in cases where they're plain onclick="fn()" attributes,
+// calling into a function that itself touches some other not-yet-
+// initialized later `const`). Moving the declaration up here, before its
+// first real use, is the actual fix - the object's contents haven't
+// changed at all, only where it sits in the file.
+const MOOD_LEVEL = {
+  adoring: 97, smitten: 96, loving: 93, affectionate: 90, devoted: 92,
+  infatuated: 94, enamored: 93, besotted: 95, swooning: 94, cherished: 91,
+  treasured: 91, fond: 84, tender: 86, starstruck: 93,
+  happy: 72, cheerful: 72, glad: 70, pleased: 68, sunny: 71, chipper: 71,
+  excited: 80, delighted: 82, bouncy: 78, elated: 85, thrilled: 85,
+  ecstatic: 88, overjoyed: 88, radiant: 86, joyful: 84, blissful: 87,
+  euphoric: 89, glowing: 83, gleeful: 79, giddy: 78,
+  content: 65, warm: 65, cozy: 63, satisfied: 62, grateful: 68, thankful: 68,
+  proud: 66, relieved: 60, peaceful: 60, calm: 58, relaxed: 58,
+  playful: 70, giggly: 70, teasing: 68, mischievous: 62, smug: 55,
+  cheeky: 68, silly: 68,
+  shy: 55, bashful: 55, flustered: 52, embarrassed: 50, awkward: 48,
+  sleepy: 55, drowsy: 55, tired: 50, exhausted: 40, weary: 42,
+  dazed: 40, dizzy: 40, overwhelmed: 35,
+  hopeful: 55, pleading: 45, curious: 58, puzzled: 50, confused: 45,
+  skeptical: 40, uncertain: 42,
+  worried: 40, anxious: 38, nervous: 40, uneasy: 38, concerned: 42,
+  sad: 30, lonely: 28, down: 30, blue: 30, tearful: 25, melancholy: 28,
+  crying: 20, devastated: 12, heartbroken: 10, grieving: 15,
+  hurt: 20, wounded: 20, withdrawn: 18, betrayed: 10, rejected: 12,
+  disappointed: 30, dejected: 28, discouraged: 30,
+  grumpy: 35, sulky: 32, annoyed: 33, upset: 30, irritated: 32,
+  indignant: 28, offended: 25, insulted: 22, angry: 20, mad: 20,
+  furious: 10, outraged: 10, enraged: 8, livid: 8,
+  jealous: 25, envious: 25, bitter: 18, resentful: 15, disgusted: 15,
+  cold: 20, distant: 18, wary: 22, guarded: 25, aloof: 22, suspicious: 22,
+  scared: 25, frightened: 22, terrified: 15, horrified: 12, shocked: 30,
+  startled: 35, surprised: 45, stunned: 35,
+  hysterical: 15, panicked: 15, frantic: 15, desperate: 12, distressed: 15,
+  determined: 55, focused: 55, stubborn: 40, defiant: 35,
+  bored: 40, indifferent: 35, numb: 25,
+  gone: 5
+};
+
 function applyAbsenceMoodDrift(status, lastMessageAtRaw) {
   const lastMessageAt = lastMessageAtRaw ? parseInt(lastMessageAtRaw, 10) : null;
   if (!lastMessageAt) return status;
@@ -1091,7 +1157,27 @@ function nudgeAffectionTowardMood(status, moodKey) {
 function parseAndApplyMoodTag(text, status) {
   let match = text.match(MOOD_TAG_OWN_LINE_RE);
   if (!match) match = text.match(MOOD_TAG_INLINE_RE);
-  if (!match) return { text, applied: false };
+  if (!match) {
+    // No {{MOOD word}} tag at all - the model just forgot the invisible
+    // bookkeeping tag this turn (common enough with weaker models, or any
+    // model over a long context). Unlike hunger/cleanliness/affection
+    // (deliberately redesigned elsewhere in this file to never depend on
+    // the model saying anything), mood had NO local fallback for the
+    // character's own stated feelings - only for the person's outgoing
+    // text (applyLocalMoodSignal). That meant one missed tag could freeze
+    // her expression at whatever it last was, FOREVER, no matter how
+    // furious/heartbroken/ecstatic her actual in-character reply reads -
+    // this is that softlock. As a safety net, fall back to scanning her
+    // own reply text for an obvious feeling word using the same
+    // fuzzy-match vocabulary resolveMoodKey() already uses for a garbled
+    // tag word - same "directionally right, not subtle" tolerance as
+    // scoreMessageMood elsewhere in this file.
+    const fallbackKey = scoreCharacterMoodFallback(text);
+    if (!fallbackKey) return { text, applied: false };
+    status.mood = fallbackKey;
+    nudgeAffectionTowardMood(status, fallbackKey);
+    return { text, applied: true };
+  }
   const cleaned = (text.slice(0, match.index) + text.slice(match.index + match[0].length))
     .replace(/[ \t]{2,}/g, " ")
     .replace(/\n{3,}/g, "\n\n")
@@ -1101,6 +1187,37 @@ function parseAndApplyMoodTag(text, status) {
   status.mood = key;
   nudgeAffectionTowardMood(status, key);
   return { text: cleaned, applied: true };
+}
+
+// Fallback scan used only when a reply has NO {{MOOD word}} tag whatsoever
+// (see parseAndApplyMoodTag above) - looks for the first clear feeling-word
+// root anywhere in her own narration/dialogue, via the same
+// MOOD_KEYWORD_FALLBACKS root list used to fuzzy-resolve a garbled tag
+// word. Deliberately reuses that list (rather than the broader/looser
+// MOOD_SIGNAL_PATTERNS built for the person's casual outgoing text, which
+// includes things like "lol"/"thanks" that would false-positive constantly
+// against her own longer narration) since these roots are specific enough
+// emotion words to be a reasonable signal even found loose in prose.
+function scoreCharacterMoodFallback(text) {
+  if (!text) return null;
+  const clean = text.toLowerCase();
+  // Tier 1: an exact known mood word used verbatim anywhere in her own
+  // reply (e.g. "ecstatic", "furious") - checked before the looser root
+  // patterns below, so a precise word she actually used isn't outranked by
+  // a coincidental broader root match (e.g. "thank you" tripping the
+  // "content" root before "ecstatic" ever gets a chance).
+  const words = clean.match(/[a-z]+/g);
+  if (words) {
+    for (const w of words) {
+      if (MOOD_LEVEL[w] !== undefined) return w;
+    }
+  }
+  // Tier 2: same root-pattern list resolveMoodKey() uses to fuzzy-resolve
+  // a garbled tag word, applied to the whole reply as a looser fallback.
+  for (const [pattern, canonical] of MOOD_KEYWORD_FALLBACKS) {
+    if (pattern.test(clean)) return canonical;
+  }
+  return null;
 }
 
 const hungerFillEl = document.getElementById("hungerFill");
@@ -1185,41 +1302,6 @@ const NEUTRAL_FALLBACK_EMOJI = "😐";
 // lonely/sad target before deciding whether absence should darken it
 // further. Also still what keeps a resolved mood word's emoji/expression
 // internally consistent with how positive/negative that word actually is.
-const MOOD_LEVEL = {
-  adoring: 97, smitten: 96, loving: 93, affectionate: 90, devoted: 92,
-  infatuated: 94, enamored: 93, besotted: 95, swooning: 94, cherished: 91,
-  treasured: 91, fond: 84, tender: 86, starstruck: 93,
-  happy: 72, cheerful: 72, glad: 70, pleased: 68, sunny: 71, chipper: 71,
-  excited: 80, delighted: 82, bouncy: 78, elated: 85, thrilled: 85,
-  ecstatic: 88, overjoyed: 88, radiant: 86, joyful: 84, blissful: 87,
-  euphoric: 89, glowing: 83, gleeful: 79, giddy: 78,
-  content: 65, warm: 65, cozy: 63, satisfied: 62, grateful: 68, thankful: 68,
-  proud: 66, relieved: 60, peaceful: 60, calm: 58, relaxed: 58,
-  playful: 70, giggly: 70, teasing: 68, mischievous: 62, smug: 55,
-  cheeky: 68, silly: 68,
-  shy: 55, bashful: 55, flustered: 52, embarrassed: 50, awkward: 48,
-  sleepy: 55, drowsy: 55, tired: 50, exhausted: 40, weary: 42,
-  dazed: 40, dizzy: 40, overwhelmed: 35,
-  hopeful: 55, pleading: 45, curious: 58, puzzled: 50, confused: 45,
-  skeptical: 40, uncertain: 42,
-  worried: 40, anxious: 38, nervous: 40, uneasy: 38, concerned: 42,
-  sad: 30, lonely: 28, down: 30, blue: 30, tearful: 25, melancholy: 28,
-  crying: 20, devastated: 12, heartbroken: 10, grieving: 15,
-  hurt: 20, wounded: 20, withdrawn: 18, betrayed: 10, rejected: 12,
-  disappointed: 30, dejected: 28, discouraged: 30,
-  grumpy: 35, sulky: 32, annoyed: 33, upset: 30, irritated: 32,
-  indignant: 28, offended: 25, insulted: 22, angry: 20, mad: 20,
-  furious: 10, outraged: 10, enraged: 8, livid: 8,
-  jealous: 25, envious: 25, bitter: 18, resentful: 15, disgusted: 15,
-  cold: 20, distant: 18, wary: 22, guarded: 25, aloof: 22, suspicious: 22,
-  scared: 25, frightened: 22, terrified: 15, horrified: 12, shocked: 30,
-  startled: 35, surprised: 45, stunned: 35,
-  hysterical: 15, panicked: 15, frantic: 15, desperate: 12, distressed: 15,
-  determined: 55, focused: 55, stubborn: 40, defiant: 35,
-  bored: 40, indifferent: 35, numb: 25,
-  gone: 5
-};
-
 // Heart-toned scale for the little icon that sits right on the affection
 // bar itself - distinct from the mood badge emoji, so it always reads as
 // "how full/warm is this heart" rather than a general mood.
@@ -1377,11 +1459,14 @@ const MOOD_THEMES_BINA = [
     accent: "#ff8fb1", accentLight: "#ffd6e8", muted: "#b79bc4",
     botBubble: "#4a3453", accentRgb: "255,143,177", bgTopRgb: "58,43,63"
   },
-  { // content / calm / playful - cooler lavender, still soft
+  { // content / calm / playful - a dimmed-down version of her own signature
+    // rose-pink (the adoring tier's #ff6fa8 above), not a different cooler
+    // hue - a neutral mood should read as "her, just quieter", not as a
+    // completely different (colder, blue-toned) color scheme.
     min: 45,
-    bgTop: "#2a2c45", bgBottom: "#131525",
-    accent: "#a5aeff", accentLight: "#e2e5ff", muted: "#9a9dc4",
-    botBubble: "#33365a", accentRgb: "165,174,255", bgTopRgb: "42,44,69"
+    bgTop: "#2f2029", bgBottom: "#16101a",
+    accent: "#b5677f", accentLight: "#e0b7c6", muted: "#a3808c",
+    botBubble: "#3a2530", accentRgb: "181,103,127", bgTopRgb: "47,32,41"
   },
   { // worried / sad / lonely - cool, muted blue-grey
     min: 25,
@@ -1417,11 +1502,14 @@ const MOOD_THEMES_RONE = [
     accent: "#c9825a", accentLight: "#f0d0b8", muted: "#b89a8a",
     botBubble: "#4a2e28", accentRgb: "201,130,90", bgTopRgb: "58,36,32"
   },
-  { // baseline aloof composure - cool blue-grey, matches her eyes
+  { // baseline aloof composure - a dimmed, muted version of her own
+    // signature sandy beige/brown (not a cool blue-grey - a neutral mood
+    // should still read as unmistakably HER, just toned down, the same
+    // logic Bina's neutral tier above uses).
     min: 45,
-    bgTop: "#2a2c38", bgBottom: "#14151d",
-    accent: "#7b8fc9", accentLight: "#d0d8f0", muted: "#8f97b0",
-    botBubble: "#333750", accentRgb: "123,143,201", bgTopRgb: "42,44,56"
+    bgTop: "#2c2620", bgBottom: "#15120e",
+    accent: "#8f7058", accentLight: "#d8c4a8", muted: "#a08b70",
+    botBubble: "#382f26", accentRgb: "143,112,88", bgTopRgb: "44,38,32"
   },
   { // prickly / annoyed - sharper steel blue
     min: 25,
@@ -1701,7 +1789,7 @@ function switchCharacter(id) {
   if (!isDead()) chatInput.placeholder = char.placeholderInput;
   renderStatusBars(); // repaints bars, portrait art, mood tint, and the theme for the new character
   renderThemeSwatches();
-  if (getUserTheme() !== "auto") applyThemeVars(THEME_PRESETS[getUserTheme()] || THEME_PRESETS.classic);
+  if (getUserTheme() !== "auto") applyThemeVars(resolveThemeByKey(getUserTheme()) || THEME_PRESETS.classic);
   syncCharacterHeader(char);
 
   // The personality-prompt drawer field is per-character too - refresh it
@@ -2899,9 +2987,55 @@ this is a fast, natural back-and-forth, not a monologue.`;
 // any client-side code can bypass). The relay just forwards the same
 // request and hands the response straight back, so everything else in the
 // app behaves identically either way.
+// Every network call the app makes to an actual model provider goes through
+// this instead of bare fetch(). A plain fetch() has NO timeout of its own -
+// if the connection stalls (which is exactly what tends to happen on
+// mobile right after the OS resumes a tab/PWA that's been backgrounded for
+// hours - the radio/socket can come back in a half-dead state that neither
+// resolves nor rejects), the returned promise just hangs forever. Every
+// caller up the chain (performAction, handleChatSend, feedRoundbina,
+// regenerateLastResponse...) disables chatInput/chatSendBtn BEFORE this
+// await and only re-enables them once it settles - so a fetch that never
+// settles at all means those controls, and the whole chat, just lock up
+// permanently with no error, no retry, nothing. That's "the app stopped
+// responding, no buttons work" after being away a while, and it's exactly
+// the failure mode reported: it fires reliably on reopen because the
+// automatic "welcome back" greeting (checkReturnAndGreet(), which triggers
+// on ANY gap over 5 minutes) makes its own network call the instant the
+// app comes back to foreground - right when a stalled connection is most
+// likely. AbortController here guarantees the promise ALWAYS settles one
+// way or another within FETCH_TIMEOUT_MS, turning a silent infinite hang
+// into a normal, already-well-handled error/toast instead.
+const FETCH_TIMEOUT_MS = 45000; // 45s - generous for a slow model, short enough to actually recover
+async function fetchWithTimeout(url, options) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } catch (error) {
+    if (error && error.name === "AbortError") {
+      throw new Error(`No response after ${Math.round(FETCH_TIMEOUT_MS / 1000)}s - the connection may have stalled (common right after reopening the app from a long time backgrounded). Try sending again.`);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// Generic completion call against whatever proxy/model the person already
+// configured in settings - shared by both characters rather than each
+// having its own copy of the fetch/error-handling logic.
+// Routes the actual network request either straight to the provider (the
+// default, works for CORS-friendly providers like Cerebras) or through an
+// optional relay server first (for providers that reject direct browser
+// requests entirely - a restriction only a real server-to-server call can
+// get around, since CORS is enforced by the provider and isn't something
+// any client-side code can bypass). The relay just forwards the same
+// request and hands the response straight back, so everything else in the
+// app behaves identically either way.
 async function doModelFetch(payload) {
   if (relayUrl) {
-    return fetch(relayUrl, {
+    return fetchWithTimeout(relayUrl, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -2911,7 +3045,7 @@ async function doModelFetch(payload) {
       })
     });
   }
-  return fetch(proxyUrl, {
+  return fetchWithTimeout(proxyUrl, {
     method: "POST",
     headers: { "Content-Type": "application/json", "Authorization": `Bearer ${apiKey}` },
     body: JSON.stringify(payload)
@@ -2962,7 +3096,7 @@ async function callGoogleFallback(messages, maxTokens) {
   if (freqPenalty !== "") generationConfig.frequencyPenalty = parseFloat(freqPenalty);
   if (presPenalty !== "") generationConfig.presencePenalty = parseFloat(presPenalty);
 
-  const res = await fetch(url, {
+  const res = await fetchWithTimeout(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ contents, systemInstruction, generationConfig })
@@ -3452,7 +3586,7 @@ function enterBothMode() {
   currentBothThemeKey = null;
   if (getUserTheme() !== "auto") {
     document.body.classList.remove("bothMode");
-    applyThemeVars(THEME_PRESETS[getUserTheme()] || THEME_PRESETS.classic);
+    applyThemeVars(resolveThemeByKey(getUserTheme()) || THEME_PRESETS.classic);
   } else {
     document.body.classList.add("bothMode");
     applyBothModeTheme();
@@ -3554,6 +3688,24 @@ function getUserTheme() {
   return localStorage.getItem(LS.USER_THEME) || "auto";
 }
 
+// ---- Custom backgrounds (person-created, via the hamburger menu) --------
+function getCustomThemes() {
+  try { return JSON.parse(localStorage.getItem(LS.CUSTOM_THEMES)) || []; }
+  catch (e) { return []; }
+}
+function saveCustomThemesList(list) {
+  localStorage.setItem(LS.CUSTOM_THEMES, JSON.stringify(list));
+}
+// Looks a theme key up across BOTH built-in presets and person-created
+// custom ones, so every place that already knew how to apply
+// THEME_PRESETS[key] can resolve a custom one the exact same way with one
+// extra fallback step - custom themes slot into the existing manual-theme
+// system rather than needing a parallel one.
+function resolveThemeByKey(key) {
+  if (THEME_PRESETS[key]) return THEME_PRESETS[key];
+  return getCustomThemes().find(t => t.id === key) || null;
+}
+
 function applyThemeVars(theme) {
   const root = document.documentElement.style;
   root.setProperty("--bg-top", theme.bgTop);
@@ -3569,11 +3721,12 @@ function applyThemeVars(theme) {
 
 function setUserTheme(name) {
   localStorage.setItem(LS.USER_THEME, name);
-  if (name !== "auto" && THEME_PRESETS[name]) {
+  const resolved = name !== "auto" ? resolveThemeByKey(name) : null;
+  if (resolved) {
     currentThemeMin = null; // so switching back to auto always re-applies
     currentBothThemeKey = null;
     document.body.classList.remove("bothMode");
-    applyThemeVars(THEME_PRESETS[name]);
+    applyThemeVars(resolved);
   } else {
     currentThemeMin = null;
     currentBothThemeKey = null;
@@ -3606,6 +3759,18 @@ function renderThemeSwatches() {
     btn.style.background = theme.swatch;
     btn.title = theme.label;
     btn.addEventListener("click", () => setUserTheme(key));
+    row.appendChild(btn);
+  });
+  // Person-created backgrounds (see "Create a background" in the hamburger
+  // menu) show up right after the built-in presets, same swatch styling -
+  // they're first-class themes, not a separate lesser category.
+  getCustomThemes().forEach(theme => {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "themeSwatch" + (active === theme.id ? " active" : "");
+    btn.style.background = theme.swatch;
+    btn.title = theme.label;
+    btn.addEventListener("click", () => setUserTheme(theme.id));
     row.appendChild(btn);
   });
 }
@@ -4285,6 +4450,133 @@ function toggleStreakModal(forceState) {
   }
   streakModal.classList.toggle("open", shouldOpen);
   streakBackdrop.classList.toggle("open", shouldOpen);
+}
+
+// ---- Custom background creator (hamburger menu) --------------------------
+function toggleBgCreatorModal(forceState) {
+  const modal = document.getElementById("bgCreatorModal");
+  const backdrop = document.getElementById("bgCreatorBackdrop");
+  const shouldOpen = typeof forceState === "boolean" ? forceState : !modal.classList.contains("open");
+  if (shouldOpen) {
+    renderBgCreatorSavedList();
+    updateBgCreatorPreview();
+  }
+  modal.classList.toggle("open", shouldOpen);
+  backdrop.classList.toggle("open", shouldOpen);
+}
+
+// Repaints the little preview card inside the creator to match whatever
+// the four color inputs currently hold, live, before anything is actually
+// saved - so the person can see what they're making instead of guessing
+// and finding out after hitting save.
+function updateBgCreatorPreview() {
+  const top = document.getElementById("bgCreatorTop").value;
+  const bottom = document.getElementById("bgCreatorBottom").value;
+  const accent = document.getElementById("bgCreatorAccent").value;
+  const bubble = document.getElementById("bgCreatorBubble").value;
+  const preview = document.getElementById("bgCreatorPreview");
+  const bubbleEl = document.getElementById("bgCreatorPreviewBubble");
+  const btnEl = document.getElementById("bgCreatorPreviewBtn");
+  if (preview) preview.style.background = `linear-gradient(160deg, ${top}, ${bottom})`;
+  if (bubbleEl) { bubbleEl.style.background = bubble; bubbleEl.style.color = "#fff"; }
+  if (btnEl) { btnEl.style.background = accent; btnEl.style.color = "#2a1f30"; }
+}
+["bgCreatorTop", "bgCreatorBottom", "bgCreatorAccent", "bgCreatorBubble"].forEach(id => {
+  const el = document.getElementById(id);
+  if (el) el.addEventListener("input", updateBgCreatorPreview);
+});
+
+// Builds a fresh accentLight/muted pair off the chosen accent/top colors
+// automatically (rather than asking for 6 separate color pickers) - accent
+// gets lightened for accentLight (used for headings/highlights), top gets
+// lightened a touch less for muted (used for secondary text) - close
+// enough to how the hand-picked presets already relate to each other.
+function lightenHex(hex, amount) {
+  const clean = (hex || "#000000").replace("#", "");
+  const n = parseInt(clean.length === 3 ? clean.split("").map(c => c + c).join("") : clean, 16);
+  const r = (n >> 16) & 255, g = (n >> 8) & 255, b = n & 255;
+  const mix = (c) => Math.round(c + (255 - c) * amount);
+  return "#" + [mix(r), mix(g), mix(b)].map(c => c.toString(16).padStart(2, "0")).join("");
+}
+
+function saveCustomBackground() {
+  const nameInput = document.getElementById("bgCreatorNameInput");
+  const top = document.getElementById("bgCreatorTop").value;
+  const bottom = document.getElementById("bgCreatorBottom").value;
+  const accent = document.getElementById("bgCreatorAccent").value;
+  const bubble = document.getElementById("bgCreatorBubble").value;
+  const label = (nameInput.value || "").trim() || "My Background";
+
+  const theme = {
+    id: "custom_" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+    label,
+    bgTop: top, bgBottom: bottom,
+    accent, accentLight: lightenHex(accent, 0.55), muted: lightenHex(bottom, 0.45),
+    botBubble: bubble,
+    accentRgb: hexToRgbString(accent), bgTopRgb: hexToRgbString(top),
+    swatch: accent
+  };
+
+  const list = getCustomThemes();
+  list.push(theme);
+  saveCustomThemesList(list);
+
+  setUserTheme(theme.id); // applies it immediately, everywhere the theme lives
+  nameInput.value = "";
+  renderBgCreatorSavedList();
+}
+
+function deleteCustomBackground(id) {
+  const list = getCustomThemes().filter(t => t.id !== id);
+  saveCustomThemesList(list);
+  // If the one just deleted was actually active, fall back to Auto rather
+  // than leaving the app pointed at a theme key that no longer resolves to
+  // anything.
+  if (getUserTheme() === id) setUserTheme("auto");
+  renderBgCreatorSavedList();
+  renderThemeSwatches();
+}
+
+function renderBgCreatorSavedList() {
+  const container = document.getElementById("bgCreatorSavedList");
+  if (!container) return;
+  const list = getCustomThemes();
+  container.innerHTML = "";
+  if (!list.length) {
+    const note = document.createElement("div");
+    note.className = "bgCreatorEmptyNote";
+    note.textContent = "Nothing saved yet - make one above.";
+    container.appendChild(note);
+    return;
+  }
+  const active = getUserTheme();
+  list.forEach(theme => {
+    const row = document.createElement("div");
+    row.className = "bgCreatorSavedItem";
+
+    const swatch = document.createElement("div");
+    swatch.className = "bgCreatorSavedSwatch";
+    swatch.style.background = `linear-gradient(160deg, ${theme.bgTop}, ${theme.bgBottom})`;
+    row.appendChild(swatch);
+
+    const nameBtn = document.createElement("button");
+    nameBtn.type = "button";
+    nameBtn.className = "bgCreatorSavedName";
+    nameBtn.textContent = theme.label + (active === theme.id ? " ✓" : "");
+    nameBtn.title = "Use this background";
+    nameBtn.addEventListener("click", () => { setUserTheme(theme.id); renderBgCreatorSavedList(); });
+    row.appendChild(nameBtn);
+
+    const delBtn = document.createElement("button");
+    delBtn.type = "button";
+    delBtn.className = "bgCreatorSavedDelete";
+    delBtn.textContent = "🗑️";
+    delBtn.title = "Delete";
+    delBtn.addEventListener("click", () => deleteCustomBackground(theme.id));
+    row.appendChild(delBtn);
+
+    container.appendChild(row);
+  });
 }
 
 // Ambient floating motes
@@ -5421,32 +5713,15 @@ function autoGrowChatInput() {
   chatInput.style.height = chatInput.scrollHeight + "px";
 }
 chatInput.addEventListener("input", autoGrowChatInput);
-// Enter sends (matching the old single-line input's behavior); Shift+Enter
-// inserts a real newline instead, same convention as most chat apps. Only
-// reliable with a physical keyboard, though - most mobile on-screen
-// keyboards' Enter/Go key doesn't carry a real shiftKey modifier at all, so
-// there's also an explicit newline button (insertChatNewline() below) for
-// anyone who can't reach this.
-chatInput.addEventListener("keydown", (e) => {
-  if (e.key === "Enter" && !e.shiftKey) {
-    e.preventDefault();
-    handleChatSend();
-  }
-});
-
-// Inserts "\n" at the current cursor position (replacing any selection,
-// same as typing would) rather than just appending to the end, then puts
-// the cursor right after it and re-triggers the auto-grow so the box
-// resizes immediately instead of waiting for the next real keystroke.
-function insertChatNewline() {
-  const start = chatInput.selectionStart;
-  const end = chatInput.selectionEnd;
-  const value = chatInput.value;
-  chatInput.value = value.slice(0, start) + "\n" + value.slice(end);
-  chatInput.selectionStart = chatInput.selectionEnd = start + 1;
-  autoGrowChatInput();
-  chatInput.focus();
-}
+// Enter is now just a plain newline (the textarea's native behavior - no
+// listener needed for that), and the Send button is the only way to
+// actually send. Used to be Enter-sends/Shift+Enter-newline with a
+// dedicated newline button as a mobile fallback (most on-screen keyboards'
+// Enter/Go key doesn't carry a real shiftKey modifier, so Shift+Enter was
+// never reachable there anyway) - that button was redundant with the
+// keyboard's own Enter once Enter itself just breaks the line, so it's
+// gone and Enter/Send now split cleanly: keyboard for line breaks, the
+// Send button for actually sending.
 
 // ---- 6. AI-GENERATED RETURN GREETINGS ------------------------------------
 // Instead of picking a canned line, we hand the model the real elapsed gap
@@ -6665,7 +6940,7 @@ function safeBootStep(label, fn) {
   safeBootStep("streak badges", () => renderStreakBadges());
   safeBootStep("theme", () => {
     renderThemeSwatches();  // paint the theme picker + apply any saved manual theme
-    if (getUserTheme() !== "auto") applyThemeVars(THEME_PRESETS[getUserTheme()] || THEME_PRESETS.classic);
+    if (getUserTheme() !== "auto") applyThemeVars(resolveThemeByKey(getUserTheme()) || THEME_PRESETS.classic);
   });
 
   // Everything above already resolves through the per-character LS proxy,

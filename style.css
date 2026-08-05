@@ -778,18 +778,6 @@
     padding: 0 20px; border-radius: 22px; cursor: pointer; font-size: 14px;
     height: 45px; flex-shrink: 0;
   }
-  /* Secondary, smaller button next to Send - inserts a newline in chatInput
-     without submitting. Exists mainly for mobile: on-screen keyboards'
-     Enter/Go key doesn't reliably carry a shiftKey modifier, so Shift+Enter
-     (the desktop convention below) isn't reachable there at all - this
-     gives everyone an explicit way to add a line break. */
-  .inputBar .newlineBtn {
-    background: rgba(255,255,255,0.12);
-    color: #fff;
-    font-weight: normal;
-    padding: 0 14px;
-    font-size: 16px;
-  }
   button:disabled { background: #5a4552; color: #8a7393; cursor: default; }
   button:active { transform: scale(0.96); }
   input:focus-visible, textarea:focus-visible, select:focus-visible, button:focus-visible {
@@ -1210,6 +1198,89 @@
   }
   .historyModalActions { display: flex; gap: 8px; }
   .historyModalActions .iconBtn { flex: 1; text-align: center; }
+
+  /* ---- Custom background creator (hamburger menu) ---- */
+  .bgCreatorPreview {
+    border-radius: 12px;
+    padding: 16px;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 10px;
+    min-height: 70px;
+    /* Live-previewed via inline style (background/color) as the color
+       inputs change - see wireBgCreatorPreview() - so this transitions
+       smoothly rather than jumping. */
+    transition: background 0.2s ease;
+  }
+  .bgCreatorPreviewBubble {
+    padding: 8px 12px;
+    border-radius: 12px;
+    font-size: 12px;
+    max-width: 80%;
+  }
+  .bgCreatorPreviewBtn {
+    border: none; border-radius: 16px; padding: 6px 16px;
+    font-size: 12px; font-weight: bold; cursor: default;
+  }
+  .bgCreatorColorGrid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 8px;
+  }
+  .bgCreatorColorField {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+    font-size: 10px;
+    color: var(--muted);
+  }
+  .bgCreatorColorField input[type="color"] {
+    width: 100%;
+    height: 32px;
+    padding: 0;
+    border: 1px solid rgba(255,255,255,0.15);
+    border-radius: 8px;
+    background: none;
+    cursor: pointer;
+  }
+  #bgCreatorSavedList {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin-top: 4px;
+    max-height: 30vh;
+    overflow-y: auto;
+  }
+  .bgCreatorSavedItem {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 10px;
+    border-radius: 10px;
+    background: rgba(255,255,255,0.04);
+    border: 1px solid rgba(255,255,255,0.06);
+  }
+  .bgCreatorSavedSwatch {
+    width: 22px; height: 22px; border-radius: 50%;
+    border: 1.5px solid rgba(255,255,255,0.3);
+    flex-shrink: 0;
+  }
+  .bgCreatorSavedName {
+    flex: 1;
+    font-size: 12px;
+    color: var(--text);
+    text-align: left;
+    background: none; border: none; cursor: pointer; padding: 4px 0;
+  }
+  .bgCreatorSavedName:hover { color: var(--accent-light); }
+  .bgCreatorSavedDelete {
+    background: none; border: none; color: var(--muted);
+    font-size: 13px; cursor: pointer; padding: 4px 6px;
+  }
+  .bgCreatorSavedDelete:hover { color: #e07a7a; }
+  .bgCreatorEmptyNote { font-size: 11px; color: var(--muted); opacity: 0.8; padding: 4px 2px; }
 
   /* ---- Backup / restore (Settings) ---- */
   .backupRestoreRow { display: flex; gap: 8px; margin-top: 6px; }
