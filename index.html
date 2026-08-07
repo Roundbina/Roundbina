@@ -168,6 +168,10 @@
         <span class="menuItemIcon">🎀</span>
         <span>Accessories</span>
       </button>
+      <button type="button" class="menuListItem" onclick="toggleAccessoryShopModal(true); toggleMenuDrawer(false);">
+        <span class="menuItemIcon">🛍️</span>
+        <span>Accessory Shop</span>
+      </button>
       <button type="button" class="menuListItem" onclick="toggleGamesHubModal(true); toggleMenuDrawer(false);">
         <span class="menuItemIcon">🎮</span>
         <span>Mini Games</span>
@@ -247,6 +251,17 @@
       <button class="iconBtn" onclick="document.getElementById('accessoryFileInput').click()">➕ import accessory</button>
     </div>
     <div id="accessoryGrid" class="accessoryGrid"></div>
+  </div>
+
+  <div class="historyBackdrop" id="accessoryShopBackdrop" onclick="toggleAccessoryShopModal(false)" style="display:none;"></div>
+  <div class="historyModal" id="accessoryShopModal" style="display:none;">
+    <div class="historyModalHeader">
+      <h2>🛍️ Accessory Shop</h2>
+      <button class="drawerCloseBtn" onclick="toggleAccessoryShopModal(false)" aria-label="Close shop">✕</button>
+    </div>
+    <div class="coinTotalDisplay">🪙 <span id="accShopCoinTotal">0</span> coins</div>
+    <div class="historyMeta">Bought accessories land straight in your 🎀 Accessories tab, ready to place on any Roundie. ✨ Rare pieces also give her an ambient glow while worn.</div>
+    <div id="accessoryShopGrid" class="accessoryGrid"></div>
   </div>
 
   <div class="historyBackdrop" id="accessoryPlacerBackdrop" onclick="closeAccessoryPlacer()" style="display:none;"></div>

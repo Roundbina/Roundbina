@@ -4436,6 +4436,39 @@ if (freqPenaltyInput) freqPenaltyInput.value = freqPenalty;
 if (presPenaltyInput) presPenaltyInput.value = presPenalty;
 if (modelSteeringInput) modelSteeringInput.value = modelSteeringNotes;
 
+// ---- Personality & Advanced: autosave --------------------------------
+// This group doesn't have its own save button (the "save connection
+// settings" button lives up in a different section entirely), so typing a
+// personality prompt and closing the drawer without scrolling up to that
+// button meant it just vanished. Autosave everything in this group as you
+// type instead, debounced so we're not hitting localStorage every keystroke.
+let personalityAutosaveTimer = null;
+function autosavePersonalityAndAdvanced() {
+  clearTimeout(personalityAutosaveTimer);
+  personalityAutosaveTimer = setTimeout(() => {
+    localStorage.setItem(LS.SYSTEM_PROMPT, systemPromptInput.value);
+    if (modelSteeringInput) {
+      modelSteeringNotes = modelSteeringInput.value;
+      localStorage.setItem(LS.MODEL_STEERING, modelSteeringNotes);
+    }
+    if (temperatureInput) {
+      temperature = temperatureInput.value.trim() || "0.8";
+      topP = topPInput.value.trim();
+      topK = topKInput.value.trim();
+      freqPenalty = freqPenaltyInput.value.trim();
+      presPenalty = presPenaltyInput.value.trim();
+      localStorage.setItem(LS.TEMPERATURE, temperature);
+      localStorage.setItem(LS.TOP_P, topP);
+      localStorage.setItem(LS.TOP_K, topK);
+      localStorage.setItem(LS.FREQ_PENALTY, freqPenalty);
+      localStorage.setItem(LS.PRES_PENALTY, presPenalty);
+    }
+  }, 500);
+}
+[systemPromptInput, modelSteeringInput, temperatureInput, topPInput, topKInput, freqPenaltyInput, presPenaltyInput]
+  .filter(Boolean)
+  .forEach(el => el.addEventListener("input", autosavePersonalityAndAdvanced));
+
 // Saves the proxy address, relay URL, model name, and custom prompt from
 // the drawer. These live outside the setup panel now, so the person
 // configures the "brain" once here instead of picking from a fixed dropdown.
@@ -7367,11 +7400,11 @@ function renderAccessoryGrid() {
   if (!grid) return;
   const library = getAccessoryLibrary();
   if (!library.length) {
-    grid.innerHTML = `<div class="historyMeta">No accessories imported yet - draw one externally (a tiny hat, bow, glasses...) with a transparent background, then import it above.</div>`;
+    grid.innerHTML = `<div class="historyMeta">No accessories yet - grab some from the 🛍️ Shop (menu), or import your own image above.</div>`;
     return;
   }
   grid.innerHTML = library.map(a => `
-    <div class="accessoryCard">
+    <div class="accessoryCard${a.rare ? " accessoryCardRare" : ""}">
       <img class="accessoryThumb" src="${a.dataUrl}" alt="${a.name}" />
       <input class="accessoryNameInput" value="${a.name}" maxlength="24"
              onchange="renameAccessory('${a.id}', this)" />
@@ -7383,6 +7416,82 @@ function renderAccessoryGrid() {
       <button class="accessoryDeleteBtn" onclick="deleteAccessory('${a.id}')" title="Delete this accessory">🗑️ delete</button>
     </div>
   `).join("");
+}
+
+// ---- Accessory Shop ---------------------------------------------------
+// A small curated catalog of ready-made accessories, purchased with the
+// same coins earned through achievements/Roundie Pop. Buying one just adds
+// it straight into the same accessory library the "import your own image"
+// flow writes to (tagged with shopId so we know it's already owned and
+// don't sell it twice) - that's what makes it show up in the Accessories
+// tab immediately, same as anything you'd imported yourself.
+const SHOP_ACCESSORIES = [
+  { id: "flower",   name: "Cherry Blossom", price: 25,  asset: "assets/accessory-flower.png" },
+  { id: "bow",       name: "Velvet Bow",     price: 30,  asset: "assets/accessory-bow.png" },
+  { id: "sleepyhat", name: "Sleepy Cap",     price: 35,  asset: "assets/accessory-sleepy-hat.png" },
+  { id: "bunnyears", name: "Bunny Ears",     price: 35,  asset: "assets/accessory-bunny-ears.png" },
+  { id: "sunglasses",name: "Cool Shades",    price: 40,  asset: "assets/accessory-sunglasses.png" },
+  { id: "tophat",    name: "Top Hat",        price: 50,  asset: "assets/accessory-top-hat.png" },
+  { id: "crown",     name: "Royal Crown",    price: 70,  asset: "assets/accessory-crown.png" },
+  { id: "halo",      name: "Halo",           price: 120, asset: "assets/accessory-halo.png",       rare: true, glow: "gold" },
+  { id: "horns",     name: "Devil Horns",    price: 120, asset: "assets/accessory-devil-horns.png", rare: true, glow: "purple" },
+];
+
+function isShopItemOwned(shopId) {
+  return getAccessoryLibrary().some(a => a.shopId === shopId);
+}
+
+function buyShopAccessory(shopId) {
+  const item = SHOP_ACCESSORIES.find(i => i.id === shopId);
+  if (!item) return;
+  if (isShopItemOwned(shopId)) return;
+  if (!spendCoins(item.price)) {
+    addMsg(`Not quite enough coins for the ${item.name} yet (need ${item.price} 🪙) - keep earning them through achievements or Roundie Pop.`, "system-msg", { persist: false });
+    return;
+  }
+  const library = getAccessoryLibrary();
+  library.push({
+    id: "shop_" + item.id,
+    shopId: item.id,
+    name: item.name,
+    dataUrl: item.asset,
+    rare: !!item.rare,
+    glow: item.glow || null,
+  });
+  saveAccessoryLibrary(library);
+  addMsg(`🛍️ Bought the ${item.name}${item.rare ? " ✨" : ""}! Head to the Accessories tab to place it on a Roundie.`, "system-msg", { persist: false });
+  renderAccessoryShop();
+  renderAccessoryGrid();
+}
+
+function renderAccessoryShop() {
+  const grid = document.getElementById("accessoryShopGrid");
+  if (!grid) return;
+  const totalEl = document.getElementById("accShopCoinTotal");
+  if (totalEl) totalEl.textContent = String(getCoins());
+  grid.innerHTML = SHOP_ACCESSORIES.map(item => {
+    const owned = isShopItemOwned(item.id);
+    return `
+    <div class="accessoryCard${item.rare ? " accessoryCardRare" : ""}">
+      <img class="accessoryThumb" src="${item.asset}" alt="${item.name}" />
+      <div class="accessoryShopName">${item.name}${item.rare ? " ✨" : ""}</div>
+      ${item.rare ? `<div class="accessoryShopRareTag">rare · glows ${item.glow === "gold" ? "golden" : "dark purple"}</div>` : ""}
+      <button class="accessoryPlaceBtn accessoryShopBuyBtn" ${owned ? "disabled" : ""}
+              onclick="buyShopAccessory('${item.id}')">
+        ${owned ? "✓ owned" : `🪙 ${item.price}`}
+      </button>
+    </div>
+  `;
+  }).join("");
+}
+
+function toggleAccessoryShopModal(show) {
+  const modal = document.getElementById("accessoryShopModal");
+  const backdrop = document.getElementById("accessoryShopBackdrop");
+  if (!modal || !backdrop) return;
+  const next = show !== undefined ? show : !modal.classList.contains("open");
+  setOverlayOpen(modal, backdrop, next);
+  if (next) renderAccessoryShop();
 }
 
 function toggleAccessoryModal(show) {
@@ -7524,9 +7633,12 @@ function renderAccessoriesInto(containerEl, charId) {
   if (!containerEl) return;
   containerEl.querySelectorAll(":scope > .accessoryOverlay").forEach(el => el.remove());
   const library = getAccessoryLibrary();
+  let glowGold = false, glowPurple = false;
   getEquippedAccessories(charId).forEach(({ accessoryId, xPct, yPct, widthPct, rotationDeg }) => {
     const accessory = library.find(a => a.id === accessoryId);
     if (!accessory) return; // library entry was deleted - nothing to draw
+    if (accessory.glow === "gold") glowGold = true;
+    else if (accessory.glow === "purple") glowPurple = true;
     const img = document.createElement("img");
     img.className = "accessoryOverlay";
     img.src = accessory.dataUrl;
@@ -7537,6 +7649,13 @@ function renderAccessoriesInto(containerEl, charId) {
     img.style.transform = `translate(-50%, -50%) rotate(${rotationDeg}deg)`;
     containerEl.appendChild(img);
   });
+  // Rare accessories (Halo, Devil Horns) emit an ambient glow straight off
+  // the Roundie itself, not just on the tiny accessory image - a separate
+  // ::before layer behind the portrait (see .roundie-glow-* in style.css)
+  // so it doesn't fight with the affection-glow/-low filters already
+  // toggled on this same element.
+  containerEl.classList.toggle("roundie-glow-gold", glowGold);
+  containerEl.classList.toggle("roundie-glow-purple", !glowGold && glowPurple);
 }
 function renderCharacterAccessories(charId) {
   if (charId === activeCharacterId && !isBothMode()) renderAccessoriesInto(portrait, charId);
@@ -7724,8 +7843,22 @@ function randomBubbleType() { return BUBBLE_TYPES[Math.floor(Math.random() * BUB
 function initBubbleGame() {
   const canvas = document.getElementById("bubbleGameCanvas");
   if (!canvas) return;
-  canvas.width = BUBBLE_CANVAS_W;
-  canvas.height = BUBBLE_CANVAS_H;
+  // The canvas backing store was being set to the exact CSS pixel size
+  // (270x420), so on any phone with devicePixelRatio > 1 (basically all of
+  // them) the browser stretched that low-res bitmap to fill the physically
+  // larger screen - that's the blocky/pixelated look. Render at the
+  // display's actual pixel density instead and scale the drawing context
+  // back down, so all the existing draw math (in logical BUBBLE_CANVAS_W/H
+  // coordinates) still works unchanged, just crisp.
+  const dpr = window.devicePixelRatio || 1;
+  canvas.style.width = BUBBLE_CANVAS_W + "px";
+  canvas.style.height = BUBBLE_CANVAS_H + "px";
+  canvas.width = Math.round(BUBBLE_CANVAS_W * dpr);
+  canvas.height = Math.round(BUBBLE_CANVAS_H * dpr);
+  const ctx = canvas.getContext("2d");
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = "high";
   BUBBLE_TYPES.forEach(getBubbleFaceImage); // kick off (cached) image loads up front
 
   const grid = new Map();
@@ -7736,7 +7869,7 @@ function initBubbleGame() {
   }
 
   bubbleGame = {
-    canvas, ctx: canvas.getContext("2d"),
+    canvas, ctx,
     grid,
     score: 0,
     shotsFired: 0,
