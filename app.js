@@ -81,6 +81,36 @@ const LS_GLOBAL = {
   // per-character USER_THEME key, this just holds the definitions.
   CUSTOM_THEMES: "roundbina_customThemes",
 
+  // ---- Custom chat colors (see the "🖌️ custom chat colors" settings
+  // section) - global, not per-character, since it's a display preference
+  // for the app itself rather than something about any one Roundie. Each
+  // is either a "#rrggbb" string or simply absent (meaning "use the theme's
+  // normal color" - see the var(--custom-x, ...) fallbacks in style.css).
+  CUSTOM_UI_TEXT_COLOR:     "roundbina_customUiTextColor",
+  CUSTOM_USER_TEXT_COLOR:   "roundbina_customUserTextColor",
+  CUSTOM_BOT_TEXT_COLOR:    "roundbina_customBotTextColor",
+  CUSTOM_USER_BUBBLE_COLOR: "roundbina_customUserBubbleColor",
+  CUSTOM_BOT_BUBBLE_COLOR:  "roundbina_customBotBubbleColor",
+
+  // ---- Coins & achievements (see COINS, ACHIEVEMENTS, ACCESSORIES &
+  // SICKNESS section) - global, shared across all three Roundies, since
+  // it's one wallet/one trophy case for the person, not per-character. ----
+  COINS: "roundbina_coins",
+  ACHIEVEMENTS_EARNED: "roundbina_achievementsEarned", // JSON array of earned achievement ids
+  CHATTED_WITH: "roundbina_chattedWith", // JSON array of character ids ever messaged, for "Full House"
+
+  // ---- Mini games (see the MINI GAMES section) - global high score/play
+  // count for Roundie Pop, the bubble shooter. Stats, not per-character,
+  // since it's one shared arcade cabinet rather than a game "belonging" to
+  // whichever Roundie happens to be active when you open it. ----
+  BUBBLE_GAMES_PLAYED: "roundbina_bubbleGamesPlayed",
+  BUBBLE_HIGH_SCORE:   "roundbina_bubbleHighScore",
+
+  // ---- Accessory library (see same section) - the imported IMAGES
+  // themselves are global (one shared closet), while which of them are
+  // actually equipped, and where, is tracked per-character above. ----
+  ACCESSORIES: "roundbina_accessories", // JSON array of {id, name, dataUrl}
+
   // ---- Locally-imported Roundie Gallery zips (see importRoundieZip()) ----
   // A flat JSON array of ids, same shape as galleryIndexCache for the
   // server-hosted roundies/index.json - just kept separate since these
@@ -103,6 +133,14 @@ const LS_PER_CHARACTER_BASE = {
   LAST_SHOWERED:"lastShowered",// timestamp of last shower - cleanliness decays off this the same way hunger decays off LAST_FED
   IS_DEAD:      "isDead",      // "true" once she's gone unfed too long
   DIED_AT:      "diedAt",      // timestamp of death, for flavor/records
+
+  // ---- Accessories & sickness (see the COINS, ACHIEVEMENTS, ACCESSORIES
+  // & SICKNESS section near the bottom) - per-character since a hat placed
+  // on Roundbina has nothing to do with Roundrone, and each Roundie is
+  // sick (or not) independently of the others. ----
+  ACCESSORY_EQUIPPED: "accessoryEquipped", // JSON array of {accessoryId, xPct, yPct, widthPct, rotationDeg}
+  SICK_UNTIL:   "sickUntil",   // timestamp ms she's sick until - absent/expired means not currently sick
+  SICK_NEXT_AT: "sickNextAt",  // timestamp ms of her next scheduled possible illness onset
 
   // ---- Craft a Story (see the "Craft a Story" section further down) ----
   // A persistent world/setting, separate from the one-off Scenarios above -
@@ -1855,6 +1893,16 @@ function hexToRgbString(hex) {
 // Ecchino's five-tier mood-shifting palette - simpler, but means her
 // background won't gradually shift color as her affection climbs the way
 // the three built-ins do. That's a reasonable v1 tradeoff, not a bug.
+// A gallery/imported Roundie's moodThemes is user-authored data (from the
+// Workshop's export, or hand-edited JSON) - validate its shape before
+// trusting it, same caution buildFlatMoodTheme's defaults already apply to
+// a missing/malformed cfg.theme. Anything that doesn't look like a real
+// array of tiers falls back to the flat single-theme path below instead.
+function isValidMoodThemesArray(themes) {
+  return Array.isArray(themes) && themes.length > 0 &&
+    themes.every(t => t && typeof t.min === "number" && typeof t.bgTop === "string" && typeof t.accent === "string");
+}
+
 function buildFlatMoodTheme(theme) {
   const t = theme || {};
   const bgTop = t.bgTop || "#3a2b3f";
@@ -1941,7 +1989,7 @@ function registerRoundieConfig(id, cfg, resolvePortrait) {
     emoji: cfg.emoji || "🌸",
     placeholderInput: cfg.placeholderInput || `Say something to ${cfg.name || id}...`,
     portraits,
-    moodThemes: buildFlatMoodTheme(cfg.theme),
+    moodThemes: isValidMoodThemesArray(cfg.moodThemes) ? cfg.moodThemes : buildFlatMoodTheme(cfg.theme),
     defaultSystemPrompt: cfg.defaultSystemPrompt || "",
     stats: cfg.stats || DEFAULT_STATS,
     galleryIntro: cfg.introBubble || null
@@ -2279,6 +2327,16 @@ let bCover = { file: null, dataUrl: null };
 let bStatBar1 = { label: "Hunger", icon: "🍅", risesFrom: "being fed", dropsFrom: "time passing" };
 let bStatBar2 = { label: "Cleanliness", icon: "🫧", risesFrom: "a bath/shower", dropsFrom: "messy play, time passing" };
 let bExtraStats = [];
+// Mood-based palettes - same shape/rules as MOOD_THEMES_BINA/RONE/ECCHINO
+// above (an array of {min, bgTop, bgBottom, accent, accentLight, muted,
+// botBubble} tiers, highest-min-that-still-qualifies wins - see
+// applyMoodTheme()). Seeded with one tier at min:0 using the app's own
+// original default palette, so exporting without ever touching this
+// section still produces a perfectly valid (if static) Roundie, exactly
+// like before this section supported multiple tiers at all.
+let bMoodTiers = [
+  { min: 0, bgTop: "#3a2b3f", bgBottom: "#1b1420", accent: "#ff8fb1", accentLight: "#ffd6e8", muted: "#b79bc4", botBubble: "#4a3453" }
+];
 let builderInitialized = false;
 
 function bSlugify(str) {
@@ -2311,6 +2369,7 @@ function initBuilderUI() {
   renderBuilderCoverSlot();
   renderBuilderSlots();
   renderBuilderStatBars();
+  renderBuilderMoodTiers();
   updateBuilderPreview();
 
   document.getElementById("b-addSlotBtn").addEventListener("click", () => {
@@ -2321,7 +2380,17 @@ function initBuilderUI() {
     bExtraStats.push({ label: "", icon: "✨", risesFrom: "", dropsFrom: "" });
     renderBuilderStatBars();
   });
-  ["b-name", "b-emoji", "b-subtitle", "b-lore", "b-c-accent", "b-c-accentLight"].forEach(id => {
+  document.getElementById("b-addMoodTierBtn").addEventListener("click", () => {
+    // Clone the highest-min tier so far as the starting point for the new
+    // one (colors carry over, just the threshold changes) - much less
+    // tedious than starting every new tier from scratch, and builds
+    // naturally upward (0 → 20 → 40...) rather than piling onto one spot.
+    const highest = bMoodTiers.reduce((a, b) => (a.min > b.min ? a : b));
+    const nextMin = Math.max(0, Math.min(100, highest.min + 20));
+    bMoodTiers.push({ ...highest, min: nextMin });
+    renderBuilderMoodTiers();
+  });
+  ["b-name", "b-emoji", "b-subtitle", "b-lore"].forEach(id => {
     document.getElementById(id).addEventListener("input", updateBuilderPreview);
   });
 }
@@ -2461,6 +2530,76 @@ function renderBuilderStatBars() {
   });
 }
 
+// One row per mood tier: a "kicks in at X affection" number field plus the
+// same 6-color palette grid the old single static section had. Sorted
+// highest-min-first for display, matching how applyMoodTheme() picks the
+// first tier whose min the current affection clears - so the order on
+// screen mirrors the priority order the app actually applies at runtime.
+const MOOD_TIER_COLOR_FIELDS = [
+  { key: "accent", label: "accent" },
+  { key: "accentLight", label: "accent light" },
+  { key: "muted", label: "muted" },
+  { key: "bgTop", label: "bg top" },
+  { key: "bgBottom", label: "bg bottom" },
+  { key: "botBubble", label: "bot bubble" },
+];
+
+function renderBuilderMoodTiers() {
+  const listEl = document.getElementById("b-moodTierList");
+  listEl.innerHTML = "";
+  const sorted = [...bMoodTiers].sort((a, b) => b.min - a.min);
+  sorted.forEach(tier => {
+    const row = document.createElement("div");
+    row.className = "builderMoodTier";
+
+    const header = document.createElement("div");
+    header.className = "bmt-header";
+    const span = document.createElement("span");
+    span.textContent = tier.min >= 85 ? "Adoring" : tier.min >= 65 ? "Happy" : tier.min >= 45 ? "Content" : tier.min >= 25 ? "Sad" : "Hurt/baseline";
+    header.appendChild(span);
+    if (bMoodTiers.length > 1) {
+      const removeBtn = document.createElement("button");
+      removeBtn.type = "button"; removeBtn.textContent = "✕";
+      removeBtn.addEventListener("click", () => {
+        bMoodTiers = bMoodTiers.filter(t => t !== tier);
+        renderBuilderMoodTiers();
+      });
+      header.appendChild(removeBtn);
+    }
+    row.appendChild(header);
+
+    const minRow = document.createElement("div");
+    minRow.className = "bmt-min";
+    const minLabel = document.createElement("span");
+    minLabel.textContent = "kicks in at affection ≥";
+    const minInput = document.createElement("input");
+    minInput.type = "number"; minInput.min = "0"; minInput.max = "100"; minInput.value = tier.min;
+    minInput.addEventListener("input", () => {
+      tier.min = Math.max(0, Math.min(100, parseInt(minInput.value, 10) || 0));
+    });
+    minInput.addEventListener("change", renderBuilderMoodTiers); // re-sort once they're done typing
+    minRow.appendChild(minLabel); minRow.appendChild(minInput);
+    row.appendChild(minRow);
+
+    const grid = document.createElement("div");
+    grid.className = "builderPaletteGrid";
+    MOOD_TIER_COLOR_FIELDS.forEach(({ key, label }) => {
+      const swatch = document.createElement("div");
+      swatch.className = "builderSwatch";
+      const input = document.createElement("input");
+      input.type = "color"; input.value = tier[key];
+      input.addEventListener("input", () => { tier[key] = input.value; });
+      const span2 = document.createElement("span");
+      span2.textContent = label;
+      swatch.appendChild(input); swatch.appendChild(span2);
+      grid.appendChild(swatch);
+    });
+    row.appendChild(grid);
+
+    listEl.appendChild(row);
+  });
+}
+
 function updateBuilderPreview() {
   const name = document.getElementById("b-name").value.trim() || "Roundlins";
   const emoji = document.getElementById("b-emoji").value.trim() || "🌸";
@@ -2516,13 +2655,16 @@ async function exportBuilderRoundie() {
     introBubble: document.getElementById("b-intro").value.trim() || `*looks up* I'm ${name}. Set up the proxy in settings before I can properly speak.`,
     defaultSystemPrompt: document.getElementById("b-prompt").value.trim(),
     theme: {
-      accent: document.getElementById("b-c-accent").value,
-      accentLight: document.getElementById("b-c-accentLight").value,
-      muted: document.getElementById("b-c-muted").value,
-      bgTop: document.getElementById("b-c-bgTop").value,
-      bgBottom: document.getElementById("b-c-bgBottom").value,
-      botBubble: document.getElementById("b-c-botBubble").value,
-    },
+      accent: bMoodTiers[0].accent,
+      accentLight: bMoodTiers[0].accentLight,
+      muted: bMoodTiers[0].muted,
+      bgTop: bMoodTiers[0].bgTop,
+      bgBottom: bMoodTiers[0].bgBottom,
+      botBubble: bMoodTiers[0].botBubble,
+    }, // kept for older readers of this format - moodThemes below is what this app itself actually reads
+    moodThemes: [...bMoodTiers]
+      .sort((a, b) => b.min - a.min)
+      .map(t => ({ ...t, accentRgb: hexToRgbString(t.accent), bgTopRgb: hexToRgbString(t.bgTop) })),
     stats: {
       bar1: { key: bSlugify(bStatBar1.label || "hunger"), label: bStatBar1.label || "Hunger", icon: bStatBar1.icon || "🍅", risesFrom: bStatBar1.risesFrom, dropsFrom: bStatBar1.dropsFrom },
       bar2: { key: bSlugify(bStatBar2.label || "cleanliness"), label: bStatBar2.label || "Cleanliness", icon: bStatBar2.icon || "🫧", risesFrom: bStatBar2.risesFrom, dropsFrom: bStatBar2.dropsFrom },
@@ -2603,6 +2745,63 @@ if (soundEnabledCheckbox) {
     if (soundEnabled) sfxTick(); // quick confirmation blip that it's actually back on
   });
 }
+
+// ---- Custom chat colors ---------------------------------------------------
+// Global overrides layered on top of whatever theme is active (see the
+// var(--custom-x, ...) fallbacks on h1/.sub/.lore/.moodBadge/.system-msg/
+// .user/.bot in style.css). Each is either a saved "#rrggbb" or simply
+// absent from localStorage, meaning "no override, use the theme's normal
+// color" - so someone who never touches this section gets exactly the old
+// behavior. Kept as its own small block (not folded into the theme-swatch
+// code above) since it's an independent layer, not another preset.
+const CUSTOM_COLOR_FIELDS = [
+  { lsKey: LS.CUSTOM_UI_TEXT_COLOR,     cssVar: "--custom-ui-text",     inputId: "uiTextColorInput",     fallbackVar: "--accent-light" },
+  { lsKey: LS.CUSTOM_USER_TEXT_COLOR,   cssVar: "--custom-user-text",   inputId: "userTextColorInput",   fallbackHex: "#2a1f30" },
+  { lsKey: LS.CUSTOM_USER_BUBBLE_COLOR, cssVar: "--custom-user-bubble", inputId: "userBubbleColorInput", fallbackVar: "--accent" },
+  { lsKey: LS.CUSTOM_BOT_TEXT_COLOR,    cssVar: "--custom-bot-text",    inputId: "botTextColorInput",    fallbackHex: "#ffe0ec" },
+  { lsKey: LS.CUSTOM_BOT_BUBBLE_COLOR,  cssVar: "--custom-bot-bubble",  inputId: "botBubbleColorInput",  fallbackVar: "--bot-bubble" },
+];
+
+// Applies every saved override (or clears it) - called once at boot and
+// again any time a picker changes, so the effect is instant with no reload.
+function applyCustomColors() {
+  const root = document.documentElement;
+  CUSTOM_COLOR_FIELDS.forEach(({ lsKey, cssVar }) => {
+    const saved = localStorage.getItem(lsKey);
+    if (saved) root.style.setProperty(cssVar, saved);
+    else root.style.removeProperty(cssVar);
+  });
+}
+
+// A color <input> can't display "no value" - it always needs a real hex
+// string - so an untouched picker shows whatever the CURRENT effective
+// color already is (the active theme's, since no override is set yet),
+// making "open settings, nudge one slider" feel like starting from what's
+// already on screen instead of some arbitrary default.
+function initCustomColorInputs() {
+  const root = getComputedStyle(document.documentElement);
+  CUSTOM_COLOR_FIELDS.forEach(({ lsKey, cssVar, inputId, fallbackVar, fallbackHex }) => {
+    const input = document.getElementById(inputId);
+    if (!input) return;
+    const saved = localStorage.getItem(lsKey);
+    const fallback = fallbackVar ? root.getPropertyValue(fallbackVar).trim() : fallbackHex;
+    input.value = saved || fallback || "#ffffff";
+    input.addEventListener("input", () => {
+      localStorage.setItem(lsKey, input.value);
+      document.documentElement.style.setProperty(cssVar, input.value);
+    });
+  });
+}
+
+// Settings-drawer "reset to theme colors" button.
+function resetCustomColors() {
+  CUSTOM_COLOR_FIELDS.forEach(({ lsKey }) => localStorage.removeItem(lsKey));
+  applyCustomColors();
+  initCustomColorInputs(); // re-sync each picker to show the theme color it just reverted to
+}
+
+applyCustomColors();
+initCustomColorInputs();
 
 // ---- Collapsible companion panel ----------------------------------------
 // Lets the portrait/stat-bar/mood panel (or the whole Roundgroup roster)
@@ -2798,6 +2997,7 @@ function renderBothPortraits() {
     const src = pickPortraitForStatus(char, loadStatusForCharacterId(id));
     if (src && img.src !== src) img.src = src;
   });
+  renderBothAccessories();
 }
 
 function renderBothStatusBars() {
@@ -3515,6 +3715,7 @@ async function handleBothSend() {
   const userText = rawInput || "*is here, saying nothing in particular*";
   chatInput.value = ""; autoGrowChatInput();
   addBothMsg("user", userText);
+  if (rawInput) trackMessageSentAchievements(getBothParticipants()); // both participants count toward "Full House"
 
   if (!apiKey) {
     addMsg("Set up your API key in ⚙️ settings first so they can actually talk to each other.", "system-msg", { persist: false });
@@ -3891,6 +4092,8 @@ function renderStatusBars() {
   renderPortraitImages();
   applyMoodTheme(characterStatus.affection);
   checkAffectionTierUpgrade();
+  renderCharacterAccessories(activeCharacterId);
+  renderSicknessUI();
 }
 
 // Renders any bars beyond the built-in two (char.stats.extra) into
@@ -5149,9 +5352,16 @@ function openInlineMsgEditor(div, initialText) {
 
     saveBtn.addEventListener("click", (e) => { e.stopPropagation(); resolve(textarea.value); });
     cancelBtn.addEventListener("click", (e) => { e.stopPropagation(); div.innerHTML = originalHTML; resolve(null); });
+    // BUG FIX: this used to treat plain Enter as "save" (Shift+Enter for a
+    // real newline) - but most phone keyboards' Enter/return key doesn't
+    // send a real shiftKey modifier, so Shift+Enter was never actually
+    // reachable on mobile (same issue already solved for the main compose
+    // box below - this editor just hadn't gotten the same fix yet). Enter
+    // now always inserts a newline like a normal textarea; Save/Cancel
+    // buttons (or Escape on a physical keyboard) are the only way to close
+    // the editor, so there's no ambiguity either way.
     textarea.addEventListener("keydown", (e) => {
-      if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); resolve(textarea.value); }
-      else if (e.key === "Escape") { div.innerHTML = originalHTML; resolve(null); }
+      if (e.key === "Escape") { div.innerHTML = originalHTML; resolve(null); }
     });
   });
 }
@@ -5558,6 +5768,7 @@ async function handleChatSend() {
   }
 
   const userDiv = isNudge ? null : addMsg(rawInput, "user");
+  if (!isNudge) trackMessageSentAchievements(); // "First Hello" / "Full House" - see ACHIEVEMENTS section
   sfxSend();
   // Read her mood/affection off what was ACTUALLY typed - a silent nudge
   // has no sentiment to score. Runs immediately, before the API call even
@@ -5694,6 +5905,7 @@ function showerRoundbina() {
   }
   localStorage.setItem(LS.LAST_SHOWERED, String(Date.now()));
   spawnSparkle(portrait, ["💦", "🫧", "🚿"]);
+  awardAchievement("squeaky_clean");
   renderStatusBars(); // reflect the reset immediately, don't wait for a reply
   if (!connected) {
     addMsg("*splish splash* Ahh, that's refreshing! Thank you for the shower~ 🚿", "bot");
@@ -5844,6 +6056,12 @@ function checkReturnAndGreet() {
 // window, which is handled separately at boot by checkReturnAndGreet).
 document.addEventListener("visibilitychange", () => {
   const now = Date.now();
+  // HEAT FIX: pause the ambient decorative animations (aurora blur, drift
+  // motes, portrait float, tomato bob) the instant the app goes to the
+  // background. CSS `animation: infinite` doesn't stop on its own just
+  // because the tab is hidden - only this explicit class does that. See
+  // the matching .appBackgrounded rules in style.css for what it pauses.
+  document.body.classList.toggle("appBackgrounded", document.visibilityState === "hidden");
   if (document.visibilityState === "hidden") {
     localStorage.setItem(LS.HIDDEN_AT, String(now));
   } else if (document.visibilityState === "visible") {
@@ -5883,6 +6101,16 @@ setInterval(() => {
   if (checkForDeath()) {
     addMsg(`💔 It's been far too long since ${getCharacter().name} was fed... she's gone still and quiet. She'll need to be revived to wake up again.`, "system-msg");
   }
+}, 5 * 60 * 1000);
+
+// Sickness runs on its own schedule (see checkSicknessSchedule() near the
+// bottom) independent of whoever's on screen, so all three characters get
+// checked here regardless of which one is active or whether Roundboth is
+// open - a Roundie can quietly come down with something while you're
+// chatting with someone else entirely.
+setInterval(() => {
+  ["bina", "rone", "ecchino"].forEach(checkSicknessSchedule);
+  renderSicknessUI();
 }, 5 * 60 * 1000);
 
 // Keeps the hunger/cleanliness bars (and affection's slow passive drift)
@@ -5946,6 +6174,7 @@ function feedRoundbina(emoji, foodName) {
   localStorage.setItem(LS.LAST_FED, String(backdateForValue(HUNGER_DECAY_MS, newHunger)));
   spawnSparkle(portrait);
   sfxFeed();
+  awardAchievement("feeding_time");
   renderStatusBars(); // reflect the reset immediately, don't wait for a reply
 
   if (!connected) {
@@ -6096,6 +6325,7 @@ async function confirmRevive() {
   characterStatus.affection = clamp0to100(Math.max(characterStatus.affection, 40));
   characterStatus.mood = "dazed";
   saveCharacterStatus();
+  awardAchievement("reviver");
   renderStatusBars();
   applyDeadUI(false);
 
@@ -6866,7 +7096,915 @@ function safeBootStep(label, fn) {
   }
 }
 
+// ---- 10. COINS, ACHIEVEMENTS, ACCESSORIES & SICKNESS ---------------------
+// Four small systems bundled into one section since they lean on each
+// other (coins are earned via achievements and spent curing sickness;
+// accessories don't touch either, but live here for locality). Each is
+// additive - nothing above this line needs to know any of this exists,
+// and an old save with none of these keys just starts everyone at 0
+// coins/no accessories/never-yet-sick, exactly as if the feature had
+// always been there and simply hadn't come up yet.
+
+// ---- Coins ----------------------------------------------------------------
+function getCoins() { return parseInt(localStorage.getItem(LS.COINS), 10) || 0; }
+function addCoins(amount) {
+  const next = Math.max(0, getCoins() + Math.round(amount));
+  localStorage.setItem(LS.COINS, String(next));
+  renderCoinBadge();
+  return next;
+}
+function spendCoins(amount) {
+  if (getCoins() < amount) return false;
+  addCoins(-amount);
+  return true;
+}
+function renderCoinBadge() {
+  const amount = getCoins();
+  const pill = document.getElementById("coinPillAmount");
+  if (pill) pill.textContent = String(amount);
+  const achTotal = document.getElementById("achCoinTotal");
+  if (achTotal) achTotal.textContent = String(amount);
+}
+
+// ---- Achievements -----------------------------------------------------
+// Deliberately tied to things that were already meaningful actions (first
+// feed, first shower, reviving her, hitting max affection...) rather than
+// busywork invented just to have something to reward - each one marks a
+// real milestone in how far along a Roundie/the person has come.
+const ACHIEVEMENTS = [
+  { id: "first_hello",   label: "First Hello",   desc: "Send your first message to any Roundie.",        icon: "👋", reward: 10 },
+  { id: "feeding_time",  label: "Feeding Time",  desc: "Feed a Roundie for the first time.",              icon: "🍅", reward: 10 },
+  { id: "squeaky_clean", label: "Squeaky Clean", desc: "Give a Roundie their first shower.",               icon: "🚿", reward: 10 },
+  { id: "bonded",        label: "Bonded",        desc: "Reach 100 affection with any Roundie.",            icon: "💞", reward: 50 },
+  { id: "streak_keeper", label: "Streak Keeper", desc: "Reach a 7-day visiting streak.",                   icon: "🔥", reward: 30 },
+  { id: "reviver",       label: "Reviver",       desc: "Revive a Roundie who had passed away.",            icon: "✨", reward: 25 },
+  { id: "dressed_up",    label: "Dressed Up",    desc: "Equip your first imported accessory.",             icon: "🎀", reward: 15 },
+  { id: "nurse",         label: "Nurse",         desc: "Cure a Roundie's sickness.",                       icon: "💊", reward: 20 },
+  { id: "full_house",    label: "Full House",    desc: "Chat with all three Roundies at least once.",      icon: "👨‍👩‍👧", reward: 25 },
+  { id: "wealthy",       label: "Wealthy",       desc: "Save up 200 coins.",                               icon: "🪙", reward: 20 },
+
+  // ---- Mini games (Roundie Pop) ----
+  { id: "first_pop",     label: "First Pop",     desc: "Play a round of Roundie Pop.",                     icon: "🫧", reward: 10 },
+  { id: "combo_starter", label: "Combo Starter", desc: "Pop 5 or more bubbles in a single shot.",          icon: "💥", reward: 15 },
+  { id: "high_scorer",   label: "High Scorer",   desc: "Score 500+ in a single game of Roundie Pop.",      icon: "⭐", reward: 25 },
+  { id: "board_clearer", label: "Board Clearer", desc: "Clear the entire board in Roundie Pop.",           icon: "🧹", reward: 40 },
+  { id: "pop_addict",    label: "Pop Addict",    desc: "Play 10 rounds of Roundie Pop.",                   icon: "🎮", reward: 20 },
+];
+
+function getEarnedAchievements() {
+  try { return JSON.parse(localStorage.getItem(LS.ACHIEVEMENTS_EARNED) || "[]"); } catch (e) { return []; }
+}
+function hasAchievement(id) { return getEarnedAchievements().includes(id); }
+
+function awardAchievement(id) {
+  if (hasAchievement(id)) return;
+  const def = ACHIEVEMENTS.find(a => a.id === id);
+  if (!def) return;
+  const earned = getEarnedAchievements();
+  earned.push(id);
+  localStorage.setItem(LS.ACHIEVEMENTS_EARNED, JSON.stringify(earned));
+  addCoins(def.reward);
+  showAchievementToast(def);
+  renderAchievementsList();
+  // The coin reward that just landed could itself be what pushes past the
+  // "Wealthy" threshold - check right after awarding, not before.
+  if (!hasAchievement("wealthy") && getCoins() >= 200) awardAchievement("wealthy");
+}
+
+function showAchievementToast(def) {
+  const toast = document.createElement("div");
+  toast.className = "achievementToast";
+  toast.innerHTML = `<span class="achievementToastIcon">${def.icon}</span><div><div class="achievementToastTitle">Achievement unlocked!</div><div class="achievementToastName">${def.label} · +${def.reward} 🪙</div></div>`;
+  document.body.appendChild(toast);
+  requestAnimationFrame(() => toast.classList.add("show"));
+  setTimeout(() => {
+    toast.classList.remove("show");
+    setTimeout(() => toast.remove(), 400);
+  }, 3600);
+}
+
+// Re-checks every condition-based achievement (the ones that depend on a
+// stat crossing a threshold rather than one specific action just having
+// happened, like feeding does). Cheap enough to just call broadly after
+// anything relevant changes rather than needing a precise map of exactly
+// which trigger implies which achievement.
+function checkAchievements() {
+  const streak = getStreakState();
+  if (streak.count >= 7) awardAchievement("streak_keeper");
+  ["bina", "rone", "ecchino"].forEach(id => {
+    if (!CHARACTERS[id]) return;
+    const s = loadStatusForCharacterId(id);
+    if (s && s.affection >= 100) awardAchievement("bonded");
+  });
+  if (getCoins() >= 200) awardAchievement("wealthy");
+}
+
+// Called right after a real (non-nudge) message is actually sent - marks
+// which Roundies have been talked to at all (for "Full House") and awards
+// "First Hello" the very first time this has ever happened for anyone.
+function trackMessageSentAchievements(ids) {
+  const list = ids || [activeCharacterId];
+  let chatted = [];
+  try { chatted = JSON.parse(localStorage.getItem(LS.CHATTED_WITH) || "[]"); } catch (e) {}
+  let changed = false;
+  list.forEach(id => { if (id && !chatted.includes(id)) { chatted.push(id); changed = true; } });
+  if (changed) localStorage.setItem(LS.CHATTED_WITH, JSON.stringify(chatted));
+  awardAchievement("first_hello");
+  if (["bina", "rone", "ecchino"].every(id => chatted.includes(id))) awardAchievement("full_house");
+}
+
+function renderAchievementsList() {
+  const container = document.getElementById("achievementList");
+  if (!container) return;
+  const earned = getEarnedAchievements();
+  container.innerHTML = ACHIEVEMENTS.map(a => {
+    const got = earned.includes(a.id);
+    return `<div class="achievementItem ${got ? "earned" : "locked"}">
+      <span class="achievementIcon">${got ? a.icon : "🔒"}</span>
+      <div class="achievementText">
+        <div class="achievementLabel">${a.label}</div>
+        <div class="achievementDesc">${a.desc}</div>
+      </div>
+      <span class="achievementReward">${got ? "✓" : "+" + a.reward + " 🪙"}</span>
+    </div>`;
+  }).join("");
+  renderCoinBadge();
+}
+
+function toggleAchievementsModal(show) {
+  const modal = document.getElementById("achievementsModal");
+  const backdrop = document.getElementById("achievementsBackdrop");
+  if (!modal || !backdrop) return;
+  const next = show !== undefined ? show : !modal.classList.contains("open");
+  modal.classList.toggle("open", next);
+  backdrop.classList.toggle("open", next);
+  if (next) renderAchievementsList();
+}
+
+// ---- Accessories --------------------------------------------------------
+// A small global library of imported images (drawn externally - a hat,
+// bow, glasses, whatever, ideally with a transparent background) plus,
+// per character, which of those are currently "equipped" and exactly
+// where. Placement is stored as PERCENTAGES of the portrait's own box
+// (xPct/yPct = the accessory's center, widthPct = its width relative to
+// the portrait's width, rotationDeg = tilt) rather than pixels - that's
+// what lets one placement, made once against the main portrait in the
+// placer below, look correct no matter what size the portrait actually
+// renders at elsewhere (the small Roundboth mini-portraits in particular).
+function getAccessoryLibrary() {
+  try { return JSON.parse(localStorage.getItem(LS.ACCESSORIES) || "[]"); } catch (e) { return []; }
+}
+function saveAccessoryLibrary(list) {
+  localStorage.setItem(LS.ACCESSORIES, JSON.stringify(list));
+}
+function getEquippedAccessories(charId) {
+  try { return JSON.parse(localStorage.getItem(charKeyFor(charId, "ACCESSORY_EQUIPPED")) || "[]"); }
+  catch (e) { return []; }
+}
+function saveEquippedAccessories(charId, list) {
+  localStorage.setItem(charKeyFor(charId, "ACCESSORY_EQUIPPED"), JSON.stringify(list));
+}
+
+// charKeyFor() is the same per-character key scheme as the top-level
+// charKey() helper (line 33) but takes an EXPLICIT character id instead of
+// always using activeCharacterId - needed here since accessories/sickness
+// checks routinely touch a character other than whichever one is on
+// screen right now (e.g. scheduling Rone's next sick day while Bina is
+// the active tab).
+function charKeyFor(charId, baseName) {
+  const base = LS_PER_CHARACTER_BASE[baseName];
+  return charId === "bina" ? `roundbina_${base}` : `roundbina_${charId}_${base}`;
+}
+
+function importAccessoryFile(event) {
+  const file = event.target.files && event.target.files[0];
+  event.target.value = ""; // allow importing the same filename again later
+  if (!file) return;
+  if (!file.type.startsWith("image/")) {
+    addMsg("That doesn't look like an image - accessories need to be a PNG/WEBP/GIF.", "system-msg", { persist: false });
+    return;
+  }
+  const reader = new FileReader();
+  reader.onload = () => {
+    const library = getAccessoryLibrary();
+    library.push({
+      id: "acc_" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+      name: file.name.replace(/\.[^.]+$/, "").slice(0, 24) || "Accessory",
+      dataUrl: reader.result,
+    });
+    saveAccessoryLibrary(library);
+    renderAccessoryGrid();
+  };
+  reader.onerror = () => addMsg("Couldn't read that image file - try a different one.", "system-msg", { persist: false });
+  reader.readAsDataURL(file);
+}
+
+function deleteAccessory(accessoryId) {
+  saveAccessoryLibrary(getAccessoryLibrary().filter(a => a.id !== accessoryId));
+  // Also unequip it from every character, so a deleted accessory can never
+  // linger as a broken/missing image on a portrait somewhere.
+  ["bina", "rone", "ecchino"].forEach(id => {
+    const equipped = getEquippedAccessories(id);
+    const next = equipped.filter(e => e.accessoryId !== accessoryId);
+    if (next.length !== equipped.length) saveEquippedAccessories(id, next);
+  });
+  renderAccessoryGrid();
+  renderCharacterAccessories(activeCharacterId);
+  if (isBothMode()) renderBothAccessories();
+}
+
+function renameAccessory(accessoryId, input) {
+  const name = input.value.trim().slice(0, 24);
+  if (!name) return;
+  const library = getAccessoryLibrary();
+  const item = library.find(a => a.id === accessoryId);
+  if (item) { item.name = name; saveAccessoryLibrary(library); }
+}
+
+function renderAccessoryGrid() {
+  const grid = document.getElementById("accessoryGrid");
+  if (!grid) return;
+  const library = getAccessoryLibrary();
+  if (!library.length) {
+    grid.innerHTML = `<div class="historyMeta">No accessories imported yet - draw one externally (a tiny hat, bow, glasses...) with a transparent background, then import it above.</div>`;
+    return;
+  }
+  grid.innerHTML = library.map(a => `
+    <div class="accessoryCard">
+      <img class="accessoryThumb" src="${a.dataUrl}" alt="${a.name}" />
+      <input class="accessoryNameInput" value="${a.name}" maxlength="24"
+             onchange="renameAccessory('${a.id}', this)" />
+      <div class="accessoryPlaceRow">
+        <button class="accessoryPlaceBtn" onclick="openAccessoryPlacer('bina','${a.id}')" title="Place on Roundbina">🩷 Bina</button>
+        <button class="accessoryPlaceBtn" onclick="openAccessoryPlacer('rone','${a.id}')" title="Place on Roundrone">💙 Rone</button>
+        <button class="accessoryPlaceBtn" onclick="openAccessoryPlacer('ecchino','${a.id}')" title="Place on Roundecchino">💚 Ecc</button>
+      </div>
+      <button class="accessoryDeleteBtn" onclick="deleteAccessory('${a.id}')" title="Delete this accessory">🗑️ delete</button>
+    </div>
+  `).join("");
+}
+
+function toggleAccessoryModal(show) {
+  const modal = document.getElementById("accessoryModal");
+  const backdrop = document.getElementById("accessoryBackdrop");
+  if (!modal || !backdrop) return;
+  const next = show !== undefined ? show : !modal.classList.contains("open");
+  modal.classList.toggle("open", next);
+  backdrop.classList.toggle("open", next);
+  if (next) renderAccessoryGrid();
+}
+
+// ---- Placer -----------------------------------------------------------
+let placerState = null; // { charId, accessoryId, xPct, yPct, widthPct, rotationDeg, dragging }
+
+function openAccessoryPlacer(charId, accessoryId) {
+  const char = CHARACTERS[charId];
+  const accessory = getAccessoryLibrary().find(a => a.id === accessoryId);
+  if (!char || !accessory) return;
+  const equipped = getEquippedAccessories(charId);
+  const existing = equipped.find(e => e.accessoryId === accessoryId);
+  placerState = existing
+    ? { charId, accessoryId, xPct: existing.xPct, yPct: existing.yPct, widthPct: existing.widthPct, rotationDeg: existing.rotationDeg }
+    : { charId, accessoryId, xPct: 50, yPct: 30, widthPct: 40, rotationDeg: 0 };
+
+  const titleEl = document.getElementById("accessoryPlacerTitle");
+  if (titleEl) titleEl.textContent = `Place "${accessory.name}" on ${char.name}`;
+  const baseImg = document.getElementById("accessoryPlacerBaseImg");
+  if (baseImg) baseImg.src = char.portraits.eyesOpen || char.portraits.happy || "";
+  const itemImg = document.getElementById("accessoryPlacerItemImg");
+  if (itemImg) itemImg.src = accessory.dataUrl;
+  const unequipBtn = document.getElementById("accessoryUnequipBtn");
+  if (unequipBtn) unequipBtn.style.display = existing ? "" : "none";
+  const scaleInput = document.getElementById("accessoryScaleInput");
+  if (scaleInput) scaleInput.value = placerState.widthPct;
+  const rotateInput = document.getElementById("accessoryRotateInput");
+  if (rotateInput) rotateInput.value = placerState.rotationDeg;
+
+  applyPlacerTransform();
+
+  const modal = document.getElementById("accessoryPlacerModal");
+  const backdrop = document.getElementById("accessoryPlacerBackdrop");
+  if (modal) modal.classList.add("open");
+  if (backdrop) backdrop.classList.add("open");
+}
+
+function closeAccessoryPlacer() {
+  placerState = null;
+  const modal = document.getElementById("accessoryPlacerModal");
+  const backdrop = document.getElementById("accessoryPlacerBackdrop");
+  if (modal) modal.classList.remove("open");
+  if (backdrop) backdrop.classList.remove("open");
+}
+
+function applyPlacerTransform() {
+  const itemImg = document.getElementById("accessoryPlacerItemImg");
+  if (!itemImg || !placerState) return;
+  itemImg.style.left = placerState.xPct + "%";
+  itemImg.style.top = placerState.yPct + "%";
+  itemImg.style.width = placerState.widthPct + "%";
+  itemImg.style.transform = `translate(-50%, -50%) rotate(${placerState.rotationDeg}deg)`;
+}
+
+function initAccessoryPlacerControls() {
+  const canvas = document.getElementById("accessoryPlacerCanvas");
+  const itemImg = document.getElementById("accessoryPlacerItemImg");
+  const scaleInput = document.getElementById("accessoryScaleInput");
+  const rotateInput = document.getElementById("accessoryRotateInput");
+  if (!canvas || !itemImg) return;
+
+  let dragging = false;
+  const pointFromEvent = (e) => {
+    const rect = canvas.getBoundingClientRect();
+    const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+    const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+    return {
+      xPct: clamp0to100(((clientX - rect.left) / rect.width) * 100),
+      yPct: clamp0to100(((clientY - rect.top) / rect.height) * 100),
+    };
+  };
+  const startDrag = (e) => { if (placerState) { dragging = true; e.preventDefault(); } };
+  const moveDrag = (e) => {
+    if (!dragging || !placerState) return;
+    const p = pointFromEvent(e);
+    placerState.xPct = p.xPct;
+    placerState.yPct = p.yPct;
+    applyPlacerTransform();
+  };
+  const endDrag = () => { dragging = false; };
+
+  itemImg.addEventListener("pointerdown", startDrag);
+  canvas.addEventListener("pointermove", moveDrag);
+  window.addEventListener("pointerup", endDrag);
+  // Touch fallback for browsers/webviews without full Pointer Events support.
+  itemImg.addEventListener("touchstart", startDrag, { passive: false });
+  canvas.addEventListener("touchmove", moveDrag, { passive: false });
+  window.addEventListener("touchend", endDrag);
+
+  if (scaleInput) scaleInput.addEventListener("input", () => {
+    if (!placerState) return;
+    placerState.widthPct = parseFloat(scaleInput.value);
+    applyPlacerTransform();
+  });
+  if (rotateInput) rotateInput.addEventListener("input", () => {
+    if (!placerState) return;
+    placerState.rotationDeg = parseFloat(rotateInput.value);
+    applyPlacerTransform();
+  });
+}
+
+function saveAccessoryPlacement() {
+  if (!placerState) return;
+  const { charId, accessoryId, xPct, yPct, widthPct, rotationDeg } = placerState;
+  const equipped = getEquippedAccessories(charId);
+  const existingIndex = equipped.findIndex(e => e.accessoryId === accessoryId);
+  const entry = { accessoryId, xPct, yPct, widthPct, rotationDeg };
+  if (existingIndex >= 0) equipped[existingIndex] = entry;
+  else equipped.push(entry);
+  saveEquippedAccessories(charId, equipped);
+  awardAchievement("dressed_up");
+  closeAccessoryPlacer();
+  renderCharacterAccessories(charId);
+  if (isBothMode()) renderBothAccessories();
+}
+
+function unequipCurrentPlacerAccessory() {
+  if (!placerState) return;
+  const { charId, accessoryId } = placerState;
+  saveEquippedAccessories(charId, getEquippedAccessories(charId).filter(e => e.accessoryId !== accessoryId));
+  closeAccessoryPlacer();
+  renderCharacterAccessories(charId);
+  if (isBothMode()) renderBothAccessories();
+}
+
+// ---- Rendering equipped accessories onto the real portraits -------------
+// One overlay <img> per equipped accessory, appended as the LAST child of
+// the portrait container so it sits on top of every expression layer
+// underneath (those cross-fade via opacity, not by being added/removed -
+// see renderPortraitImages() above - so a single sibling on top stays
+// correctly layered no matter which expression is currently showing).
+function renderAccessoriesInto(containerEl, charId) {
+  if (!containerEl) return;
+  containerEl.querySelectorAll(":scope > .accessoryOverlay").forEach(el => el.remove());
+  const library = getAccessoryLibrary();
+  getEquippedAccessories(charId).forEach(({ accessoryId, xPct, yPct, widthPct, rotationDeg }) => {
+    const accessory = library.find(a => a.id === accessoryId);
+    if (!accessory) return; // library entry was deleted - nothing to draw
+    const img = document.createElement("img");
+    img.className = "accessoryOverlay";
+    img.src = accessory.dataUrl;
+    img.alt = accessory.name;
+    img.style.left = xPct + "%";
+    img.style.top = yPct + "%";
+    img.style.width = widthPct + "%";
+    img.style.transform = `translate(-50%, -50%) rotate(${rotationDeg}deg)`;
+    containerEl.appendChild(img);
+  });
+}
+function renderCharacterAccessories(charId) {
+  if (charId === activeCharacterId && !isBothMode()) renderAccessoriesInto(portrait, charId);
+}
+function renderBothAccessories() {
+  getBothParticipants().forEach(id => {
+    renderAccessoriesInto(document.getElementById(`mini-${id}-portrait`), id);
+  });
+}
+
+// ---- Sickness -------------------------------------------------------------
+// A periodic, schedule-driven illness - not random chance rolled on every
+// tick, but an actual future timestamp (SICK_NEXT_AT) set the moment she's
+// last cured (or the very first time she's ever loaded), so "once in a
+// while, on a schedule" is literal: it's checked against the clock, not
+// re-rolled. The window is randomized once per cycle (roughly 1-3 real
+// days) so multiple Roundies don't all fall sick in lockstep.
+const SICK_MIN_GAP_MS = 24 * 60 * 60 * 1000;   // at least a day between recoveries and the next possible onset
+const SICK_MAX_GAP_MS = 72 * 60 * 60 * 1000;   // at most three days
+const SICK_MIN_DURATION_MS = 3 * 60 * 60 * 1000;  // a cold passes in a few hours on its own...
+const SICK_MAX_DURATION_MS = 9 * 60 * 60 * 1000;  // ...up to most of a day if left untreated
+const MEDICINE_COST = 15;
+
+function randomBetween(min, max) { return min + Math.random() * (max - min); }
+
+function isCharacterSick(charId) {
+  const until = parseInt(localStorage.getItem(charKeyFor(charId, "SICK_UNTIL")), 10);
+  return !!until && Date.now() < until;
+}
+
+// Makes sure every character always has a next-onset time scheduled -
+// called at boot for each of the three so a brand-new save doesn't skip
+// straight to "never gets sick" just because SICK_NEXT_AT was never set.
+function ensureSickScheduled(charId) {
+  const key = charKeyFor(charId, "SICK_NEXT_AT");
+  if (!localStorage.getItem(key)) {
+    localStorage.setItem(key, String(Date.now() + randomBetween(SICK_MIN_GAP_MS, SICK_MAX_GAP_MS)));
+  }
+}
+
+// The actual schedule check - due for a call on every existing periodic
+// tick (see the setInterval calls this hooks into further down) plus once
+// at boot, same as the death check right above it does.
+function checkSicknessSchedule(charId) {
+  if (!CHARACTERS[charId]) return;
+  ensureSickScheduled(charId);
+  const isDeadChar = localStorage.getItem(charKeyFor(charId, "IS_DEAD")) === "true";
+  if (isDeadChar || isCharacterSick(charId)) return;
+  const nextAt = parseInt(localStorage.getItem(charKeyFor(charId, "SICK_NEXT_AT")), 10);
+  if (Date.now() >= nextAt) {
+    const until = Date.now() + randomBetween(SICK_MIN_DURATION_MS, SICK_MAX_DURATION_MS);
+    localStorage.setItem(charKeyFor(charId, "SICK_UNTIL"), String(until));
+    localStorage.removeItem(charKeyFor(charId, "SICK_NEXT_AT")); // rescheduled fresh once cured/recovered
+    if (charId === activeCharacterId && !isBothMode()) {
+      addMsg(`🤒 ${CHARACTERS[charId].name} isn't feeling well today...`, "system-msg");
+    }
+  }
+}
+
+// Cures instantly if paid for with coins, OR is a no-op if she's not
+// actually sick / there aren't enough coins - either way, safe to call
+// speculatively from the UI without checking state first.
+function cureCharacterSickness(charId) {
+  if (!isCharacterSick(charId)) return;
+  if (!spendCoins(MEDICINE_COST)) {
+    addMsg(`Not quite enough coins for medicine yet (need ${MEDICINE_COST} 🪙) - keep earning them through achievements.`, "system-msg", { persist: false });
+    return;
+  }
+  localStorage.removeItem(charKeyFor(charId, "SICK_UNTIL"));
+  localStorage.setItem(charKeyFor(charId, "SICK_NEXT_AT"), String(Date.now() + randomBetween(SICK_MIN_GAP_MS, SICK_MAX_GAP_MS)));
+  awardAchievement("nurse");
+  if (charId === activeCharacterId) {
+    spawnSparkle(portrait, ["💊", "✨"]);
+    addMsg(`💊 You gave ${CHARACTERS[charId].name} her medicine - color's already coming back to her cheeks.`, "system-msg");
+    renderStatusBars();
+  }
+}
+function cureActiveCharacterSickness() { cureCharacterSickness(activeCharacterId); }
+
+// Reflects sickness on whichever portrait/UI is currently showing - a pale
+// filter on the portrait (same treatment style as affection-low, layered
+// independently) plus the medicine button appearing only while it's
+// actually needed.
+function renderSicknessUI() {
+  const sick = isCharacterSick(activeCharacterId);
+  if (portrait) portrait.classList.toggle("sick", sick && !isBothMode());
+  const cureBtn = document.getElementById("cureSickBtn");
+  if (cureBtn) cureBtn.style.display = sick && !isBothMode() ? "" : "none";
+}
+
+// ---- 11. MINI GAMES -------------------------------------------------------
+// A dedicated "🎮 Mini Games" tab in the hamburger menu, opening a small
+// hub that (for now) holds one game - Roundie Pop, a hex-grid bubble
+// shooter using each Roundie's own portrait as the bubble face. Built to
+// be a hub rather than a single hardcoded modal so a second/third game
+// later is just another card + its own open function, without touching
+// this one's plumbing.
+
+function getGamesHubStats() {
+  return {
+    played: parseInt(localStorage.getItem(LS.BUBBLE_GAMES_PLAYED), 10) || 0,
+    highScore: parseInt(localStorage.getItem(LS.BUBBLE_HIGH_SCORE), 10) || 0,
+  };
+}
+
+function toggleGamesHubModal(show) {
+  const modal = document.getElementById("gamesHubModal");
+  const backdrop = document.getElementById("gamesHubBackdrop");
+  if (!modal || !backdrop) return;
+  const next = show !== undefined ? show : !modal.classList.contains("open");
+  modal.classList.toggle("open", next);
+  backdrop.classList.toggle("open", next);
+  if (next) renderGamesHub();
+}
+
+function renderGamesHub() {
+  const { played, highScore } = getGamesHubStats();
+  const scoreEl = document.getElementById("bubbleGameHighScore");
+  if (scoreEl) scoreEl.textContent = highScore ? `High score: ${highScore} · ${played} played` : "Not played yet";
+}
+
+// ---- Roundie Pop: hex-grid bubble shooter ---------------------------------
+// Classic 3-color match-3 bubble shooter mechanics (aim/drag to set angle,
+// release to fire, 3+ same-portrait bubbles connected together pop, and
+// anything left dangling with no path back up to the ceiling falls too),
+// just re-skinned with each built-in Roundie's own portrait as the "color".
+const BUBBLE_TYPES = ["bina", "rone", "ecchino"];
+const BUBBLE_R = 15;
+const BUBBLE_COLS = 9;
+const BUBBLE_ROW_H = BUBBLE_R * Math.sqrt(3);
+const BUBBLE_CANVAS_W = BUBBLE_R * 2 * BUBBLE_COLS;
+const BUBBLE_CANVAS_H = 420;
+const BUBBLE_SHOOTER_X = BUBBLE_CANVAS_W / 2;
+const BUBBLE_SHOOTER_Y = BUBBLE_CANVAS_H - 30;
+const BUBBLE_GAME_OVER_ROW = 13; // a bubble resting at/past this row ends the game
+const BUBBLE_SHOTS_PER_NEW_ROW = 5; // difficulty ramp - a fresh row is pushed down periodically
+
+let bubbleGame = null; // set by initBubbleGame(); null whenever the modal is closed
+const bubbleFaceImages = {}; // charId -> Image, lazily loaded once and reused every game
+
+function getBubbleFaceImage(charId) {
+  if (bubbleFaceImages[charId]) return bubbleFaceImages[charId];
+  const char = CHARACTERS[charId];
+  const src = char && (char.portraits.happy || char.portraits.eyesOpen);
+  const img = new Image();
+  if (src) img.src = src;
+  bubbleFaceImages[charId] = img;
+  return img;
+}
+
+function bubbleCellKey(row, col) { return row + "," + col; }
+function bubbleCellToXY(row, col) {
+  const xOffset = (row % 2 === 1) ? BUBBLE_R : 0;
+  return { x: BUBBLE_R + col * BUBBLE_R * 2 + xOffset, y: BUBBLE_R + row * BUBBLE_ROW_H };
+}
+function bubbleNeighbors(row, col) {
+  const isOdd = row % 2 === 1;
+  const deltas = isOdd
+    ? [[0, -1], [0, 1], [-1, 0], [-1, 1], [1, 0], [1, 1]]
+    : [[0, -1], [0, 1], [-1, -1], [-1, 0], [1, -1], [1, 0]];
+  return deltas.map(([dr, dc]) => [row + dr, col + dc]);
+}
+function bubbleColsInRow(row) { return (row % 2 === 1) ? BUBBLE_COLS - 1 : BUBBLE_COLS; }
+
+function openBubbleGame() {
+  const modal = document.getElementById("bubbleGameModal");
+  const backdrop = document.getElementById("bubbleGameBackdrop");
+  if (!modal || !backdrop) return;
+  modal.classList.add("open");
+  backdrop.classList.add("open");
+  initBubbleGame();
+}
+
+function closeBubbleGame() {
+  const modal = document.getElementById("bubbleGameModal");
+  const backdrop = document.getElementById("bubbleGameBackdrop");
+  if (modal) modal.classList.remove("open");
+  if (backdrop) backdrop.classList.remove("open");
+  // Stop the render loop the instant the game closes - see the
+  // ambient-animation heat fix earlier in this file for exactly why an
+  // untracked rAF/animation loop left running is the thing to avoid here.
+  if (bubbleGame && bubbleGame.rafId) cancelAnimationFrame(bubbleGame.rafId);
+  bubbleGame = null;
+}
+
+function randomBubbleType() { return BUBBLE_TYPES[Math.floor(Math.random() * BUBBLE_TYPES.length)]; }
+
+function initBubbleGame() {
+  const canvas = document.getElementById("bubbleGameCanvas");
+  if (!canvas) return;
+  canvas.width = BUBBLE_CANVAS_W;
+  canvas.height = BUBBLE_CANVAS_H;
+  BUBBLE_TYPES.forEach(getBubbleFaceImage); // kick off (cached) image loads up front
+
+  const grid = new Map();
+  for (let row = 0; row < 5; row++) {
+    for (let col = 0; col < bubbleColsInRow(row); col++) {
+      grid.set(bubbleCellKey(row, col), randomBubbleType());
+    }
+  }
+
+  bubbleGame = {
+    canvas, ctx: canvas.getContext("2d"),
+    grid,
+    score: 0,
+    shotsFired: 0,
+    currentType: randomBubbleType(),
+    nextType: randomBubbleType(),
+    shot: null,       // { x, y, vx, vy, type }
+    aimAngle: Math.PI / 2,
+    aiming: false,
+    over: false,
+    rafId: null,
+  };
+
+  const scoreEl = document.getElementById("bubbleGameScore");
+  if (scoreEl) scoreEl.textContent = "0";
+  const overEl = document.getElementById("bubbleGameOverPanel");
+  if (overEl) overEl.style.display = "none";
+
+  bubbleGameLoop();
+}
+
+function bubbleAngleFromEvent(e) {
+  const canvas = bubbleGame.canvas;
+  const rect = canvas.getBoundingClientRect();
+  const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+  const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+  const x = (clientX - rect.left) * (canvas.width / rect.width);
+  const y = (clientY - rect.top) * (canvas.height / rect.height);
+  let angle = Math.atan2(BUBBLE_SHOOTER_Y - y, x - BUBBLE_SHOOTER_X);
+  return Math.max(0.18, Math.min(Math.PI - 0.18, angle));
+}
+
+function initBubbleGameControls() {
+  const canvas = document.getElementById("bubbleGameCanvas");
+  if (!canvas) return;
+  const startAim = (e) => {
+    if (!bubbleGame || bubbleGame.over || bubbleGame.shot) return;
+    bubbleGame.aiming = true;
+    bubbleGame.aimAngle = bubbleAngleFromEvent(e);
+    e.preventDefault();
+  };
+  const moveAim = (e) => {
+    if (!bubbleGame || !bubbleGame.aiming) return;
+    bubbleGame.aimAngle = bubbleAngleFromEvent(e);
+  };
+  const releaseAim = () => {
+    if (!bubbleGame || !bubbleGame.aiming) return;
+    bubbleGame.aiming = false;
+    fireBubbleShot();
+  };
+  canvas.addEventListener("pointerdown", startAim);
+  canvas.addEventListener("pointermove", moveAim);
+  window.addEventListener("pointerup", releaseAim);
+  canvas.addEventListener("touchstart", startAim, { passive: false });
+  canvas.addEventListener("touchmove", moveAim, { passive: false });
+  window.addEventListener("touchend", releaseAim);
+}
+
+function fireBubbleShot() {
+  if (!bubbleGame || bubbleGame.over || bubbleGame.shot) return;
+  const speed = 9;
+  bubbleGame.shot = {
+    x: BUBBLE_SHOOTER_X, y: BUBBLE_SHOOTER_Y,
+    vx: Math.cos(bubbleGame.aimAngle) * speed,
+    vy: -Math.sin(bubbleGame.aimAngle) * speed,
+    type: bubbleGame.currentType,
+  };
+  bubbleGame.shotsFired++;
+}
+
+function bubbleXyToNearestCell(x, y) {
+  let row = Math.max(0, Math.round((y - BUBBLE_R) / BUBBLE_ROW_H));
+  const isOdd = row % 2 === 1;
+  const maxCol = bubbleColsInRow(row) - 1;
+  let col = Math.round((x - BUBBLE_R - (isOdd ? BUBBLE_R : 0)) / (BUBBLE_R * 2));
+  col = Math.max(0, Math.min(maxCol, col));
+  return { row, col };
+}
+
+function findEmptyLandingCell(x, y) {
+  const guess = bubbleXyToNearestCell(x, y);
+  if (!bubbleGame.grid.has(bubbleCellKey(guess.row, guess.col))) return guess;
+  // Occupied - widen the search outward through neighbors until an empty
+  // slot turns up (there always is one nearby unless the board is packed
+  // solid, which the game-over check upstream should already have caught).
+  const seen = new Set([bubbleCellKey(guess.row, guess.col)]);
+  let frontier = [guess];
+  for (let depth = 0; depth < 6 && frontier.length; depth++) {
+    const next = [];
+    for (const { row, col } of frontier) {
+      for (const [nr, nc] of bubbleNeighbors(row, col)) {
+        if (nr < 0 || nc < 0 || nc >= bubbleColsInRow(nr)) continue;
+        const key = bubbleCellKey(nr, nc);
+        if (seen.has(key)) continue;
+        seen.add(key);
+        if (!bubbleGame.grid.has(key)) return { row: nr, col: nc };
+        next.push({ row: nr, col: nc });
+      }
+    }
+    frontier = next;
+  }
+  return guess; // fallback - shouldn't normally happen
+}
+
+function popMatchesAt(row, col) {
+  const type = bubbleGame.grid.get(bubbleCellKey(row, col));
+  if (!type) return;
+  const seen = new Set([bubbleCellKey(row, col)]);
+  const group = [[row, col]];
+  let frontier = [[row, col]];
+  while (frontier.length) {
+    const next = [];
+    for (const [r, c] of frontier) {
+      for (const [nr, nc] of bubbleNeighbors(r, c)) {
+        const key = bubbleCellKey(nr, nc);
+        if (seen.has(key) || !bubbleGame.grid.has(key)) continue;
+        if (bubbleGame.grid.get(key) !== type) continue;
+        seen.add(key);
+        group.push([nr, nc]);
+        next.push([nr, nc]);
+      }
+    }
+    frontier = next;
+  }
+
+  if (group.length < 3) return;
+  group.forEach(([r, c]) => bubbleGame.grid.delete(bubbleCellKey(r, c)));
+  bubbleGame.score += group.length * 10;
+  if (group.length >= 5) awardAchievement("combo_starter");
+  dropFloatingBubbles();
+}
+
+function dropFloatingBubbles() {
+  // Anything still reachable from the ceiling (row 0) via connected
+  // neighbors stays; everything else is "floating" and falls away too -
+  // the other half of what makes a match actually clear surrounding
+  // bubbles instead of leaving orphaned islands hanging in place.
+  const reachable = new Set();
+  let frontier = [];
+  for (let col = 0; col < bubbleColsInRow(0); col++) {
+    const key = bubbleCellKey(0, col);
+    if (bubbleGame.grid.has(key)) { reachable.add(key); frontier.push([0, col]); }
+  }
+  while (frontier.length) {
+    const next = [];
+    for (const [r, c] of frontier) {
+      for (const [nr, nc] of bubbleNeighbors(r, c)) {
+        const key = bubbleCellKey(nr, nc);
+        if (reachable.has(key) || !bubbleGame.grid.has(key)) continue;
+        reachable.add(key);
+        next.push([nr, nc]);
+      }
+    }
+    frontier = next;
+  }
+  let dropped = 0;
+  for (const key of Array.from(bubbleGame.grid.keys())) {
+    if (!reachable.has(key)) { bubbleGame.grid.delete(key); dropped++; }
+  }
+  if (dropped) bubbleGame.score += dropped * 20;
+
+  if (bubbleGame.grid.size === 0) endBubbleGame(true);
+}
+
+function pushNewBubbleRow() {
+  const shifted = new Map();
+  for (const [key, type] of bubbleGame.grid) {
+    const [r, c] = key.split(",").map(Number);
+    shifted.set(bubbleCellKey(r + 1, c), type);
+  }
+  for (let col = 0; col < bubbleColsInRow(0); col++) {
+    shifted.set(bubbleCellKey(0, col), randomBubbleType());
+  }
+  bubbleGame.grid = shifted;
+}
+
+function checkBubbleGameOver() {
+  for (const key of bubbleGame.grid.keys()) {
+    const row = parseInt(key.split(",")[0], 10);
+    if (row >= BUBBLE_GAME_OVER_ROW) return true;
+  }
+  return false;
+}
+
+function endBubbleGame(won) {
+  if (!bubbleGame || bubbleGame.over) return;
+  bubbleGame.over = true;
+  const played = (parseInt(localStorage.getItem(LS.BUBBLE_GAMES_PLAYED), 10) || 0) + 1;
+  localStorage.setItem(LS.BUBBLE_GAMES_PLAYED, String(played));
+  const prevHigh = parseInt(localStorage.getItem(LS.BUBBLE_HIGH_SCORE), 10) || 0;
+  if (bubbleGame.score > prevHigh) localStorage.setItem(LS.BUBBLE_HIGH_SCORE, String(bubbleGame.score));
+
+  const coinsEarned = Math.min(40, Math.round(bubbleGame.score / 20)) + (won ? 15 : 0);
+  addCoins(coinsEarned);
+  awardAchievement("first_pop");
+  if (bubbleGame.score >= 500) awardAchievement("high_scorer");
+  if (won) awardAchievement("board_clearer");
+  if (played >= 10) awardAchievement("pop_addict");
+
+  const overEl = document.getElementById("bubbleGameOverPanel");
+  const overText = document.getElementById("bubbleGameOverText");
+  if (overText) {
+    overText.textContent = won
+      ? `Board cleared! ${bubbleGame.score} points · +${coinsEarned} 🪙`
+      : `Game over - ${bubbleGame.score} points · +${coinsEarned} 🪙`;
+  }
+  if (overEl) overEl.style.display = "flex";
+}
+
+function updateBubbleGame() {
+  const g = bubbleGame;
+  if (g.shot) {
+    g.shot.x += g.shot.vx;
+    g.shot.y += g.shot.vy;
+    if (g.shot.x < BUBBLE_R) { g.shot.x = BUBBLE_R; g.shot.vx *= -1; }
+    if (g.shot.x > BUBBLE_CANVAS_W - BUBBLE_R) { g.shot.x = BUBBLE_CANVAS_W - BUBBLE_R; g.shot.vx *= -1; }
+
+    let landed = g.shot.y <= BUBBLE_R;
+    if (!landed) {
+      for (const key of g.grid.keys()) {
+        const [r, c] = key.split(",").map(Number);
+        const { x, y } = bubbleCellToXY(r, c);
+        const dx = x - g.shot.x, dy = y - g.shot.y;
+        if (Math.sqrt(dx * dx + dy * dy) < BUBBLE_R * 1.9) { landed = true; break; }
+      }
+    }
+
+    if (landed) {
+      const cell = findEmptyLandingCell(g.shot.x, g.shot.y);
+      g.grid.set(bubbleCellKey(cell.row, cell.col), g.shot.type);
+      popMatchesAt(cell.row, cell.col);
+      g.shot = null;
+      g.currentType = g.nextType;
+      g.nextType = randomBubbleType();
+      if (g.shotsFired > 0 && g.shotsFired % BUBBLE_SHOTS_PER_NEW_ROW === 0) pushNewBubbleRow();
+      if (!g.over && checkBubbleGameOver()) endBubbleGame(false);
+    }
+  }
+  const scoreEl = document.getElementById("bubbleGameScore");
+  if (scoreEl) scoreEl.textContent = String(g.score);
+}
+
+function drawBubbleGame() {
+  const g = bubbleGame, ctx = g.ctx;
+  ctx.clearRect(0, 0, BUBBLE_CANVAS_W, BUBBLE_CANVAS_H);
+
+  const drawFace = (x, y, type) => {
+    const img = getBubbleFaceImage(type);
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(x, y, BUBBLE_R - 1, 0, Math.PI * 2);
+    ctx.closePath();
+    ctx.fillStyle = "rgba(255,255,255,0.08)";
+    ctx.fill();
+    ctx.clip();
+    if (img.complete && img.naturalWidth) {
+      ctx.drawImage(img, x - BUBBLE_R, y - BUBBLE_R, BUBBLE_R * 2, BUBBLE_R * 2);
+    }
+    ctx.restore();
+    ctx.beginPath();
+    ctx.arc(x, y, BUBBLE_R - 1, 0, Math.PI * 2);
+    ctx.strokeStyle = "rgba(255,255,255,0.35)";
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+  };
+
+  for (const [key, type] of g.grid) {
+    const [r, c] = key.split(",").map(Number);
+    const { x, y } = bubbleCellToXY(r, c);
+    drawFace(x, y, type);
+  }
+
+  if (g.shot) drawFace(g.shot.x, g.shot.y, g.shot.type);
+
+  if (!g.over && !g.shot) {
+    const len = 50;
+    ctx.beginPath();
+    ctx.moveTo(BUBBLE_SHOOTER_X, BUBBLE_SHOOTER_Y);
+    ctx.lineTo(BUBBLE_SHOOTER_X + Math.cos(g.aimAngle) * len, BUBBLE_SHOOTER_Y - Math.sin(g.aimAngle) * len);
+    ctx.strokeStyle = "rgba(255,255,255,0.5)";
+    ctx.setLineDash([4, 4]);
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    ctx.setLineDash([]);
+  }
+  drawFace(BUBBLE_SHOOTER_X, BUBBLE_SHOOTER_Y, g.currentType);
+  drawFace(BUBBLE_SHOOTER_X + 40, BUBBLE_SHOOTER_Y, g.nextType);
+  ctx.font = "9px sans-serif";
+  ctx.fillStyle = "rgba(255,255,255,0.6)";
+  ctx.textAlign = "center";
+  ctx.fillText("next", BUBBLE_SHOOTER_X + 40, BUBBLE_SHOOTER_Y + BUBBLE_R + 11);
+}
+
+function bubbleGameLoop() {
+  if (!bubbleGame) return; // modal was closed mid-frame
+  if (!document.hidden) {
+    updateBubbleGame();
+    drawBubbleGame();
+  }
+  bubbleGame.rafId = requestAnimationFrame(bubbleGameLoop);
+}
+
 (function boot() {
+
   // If a key was remembered on this device, skip straight to the chat
   // instead of asking the person to paste it in again every single time.
   safeBootStep("restore remembered key", () => {
@@ -6938,6 +8076,15 @@ function safeBootStep(label, fn) {
   safeBootStep("status bars", () => renderStatusBars());   // hunger/cleanliness (elapsed-time) + affection/mood (locally-derived) bars beside the sprite (also repaints portrait art)
   safeBootStep("daily streak", () => checkAndUpdateStreak()); // app-wide daily streak, independent of either character
   safeBootStep("streak badges", () => renderStreakBadges());
+  safeBootStep("coins, achievements, accessories & sickness", () => {
+    renderCoinBadge();
+    checkAchievements();
+    ["bina", "rone", "ecchino"].forEach(checkSicknessSchedule); // catches anyone whose scheduled onset already passed while the app was closed
+    renderSicknessUI();
+    if (isBothMode()) renderBothAccessories();
+    initAccessoryPlacerControls(); // drag/scale/rotate wiring for the placer modal - safe to do once even before it's ever opened
+    initBubbleGameControls(); // aim/fire wiring for Roundie Pop - likewise safe before the modal's ever opened
+  });
   safeBootStep("theme", () => {
     renderThemeSwatches();  // paint the theme picker + apply any saved manual theme
     if (getUserTheme() !== "auto") applyThemeVars(resolveThemeByKey(getUserTheme()) || THEME_PRESETS.classic);

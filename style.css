@@ -66,7 +66,19 @@
     display: flex;
     flex-direction: column;
     height: 100vh;
-    height: 100dvh;
+    /* PERF/LAG FIX: this used to be 100dvh (dynamic viewport height),
+       which recalculates on every single frame while the on-screen
+       keyboard animates open/closed - forcing a full layout recompute of
+       the ENTIRE page's flex tree each of those frames, right while the
+       header's own continuously-running animations (motes, aurora,
+       portrait float) are trying to composite at the same time. 100svh
+       (small viewport height) is the size assuming the keyboard/toolbars
+       ARE already showing, so it's a fixed number that never changes
+       during the keyboard's transition - no more per-frame reflow. The
+       focused input still scrolls into view above the keyboard exactly
+       as before; that's the browser's native focus-scroll behavior, not
+       something this height rule was doing. */
+    height: 100svh;
     color: #fff;
   }
 
@@ -178,7 +190,7 @@
   }
   h1 {
     font-size: 17px;
-    color: var(--accent-light);
+    color: var(--custom-ui-text, var(--accent-light));
     margin: 4px 0 0;
     display: flex;
     align-items: center;
@@ -227,8 +239,8 @@
     0%, 100% { transform: translateY(0) rotate(0deg); }
     50% { transform: translateY(-3px) rotate(-6deg); }
   }
-  .sub { color: var(--muted); font-size: 11px; margin-top: 1px; }
-  .lore { color: #7d6789; font-size: 10px; margin-top: 2px; font-style: italic; }
+  .sub { color: var(--custom-ui-text, var(--muted)); font-size: 11px; margin-top: 1px; }
+  .lore { color: var(--custom-ui-text, #7d6789); font-size: 10px; margin-top: 2px; font-style: italic; }
 
   /* ---- Avatar portrait ---- */
   .portrait-wrap {
@@ -504,7 +516,7 @@
     border-radius: 999px;
     background: rgba(255,255,255,0.08);
     border: 1px solid rgba(255,255,255,0.18);
-    color: var(--accent-light);
+    color: var(--custom-ui-text, var(--accent-light));
     font-size: 11px;
     text-transform: capitalize;
     width: fit-content;
@@ -515,6 +527,11 @@
      overrides) the .deceased state handled elsewhere. */
   .portrait.affection-high:not(.deceased) { filter: drop-shadow(0 6px 20px rgba(255,110,170,0.6)) saturate(1.15); }
   .portrait.affection-low:not(.deceased) { filter: grayscale(0.35) brightness(0.85) drop-shadow(0 4px 10px rgba(80,60,100,0.35)); }
+  /* Sickness - a pale, slightly desaturated cast, distinct from (and takes
+     priority over) the affection tint above since feeling unwell isn't
+     about how she's being treated. Never applied over .deceased - death
+     already has its own, more severe, visual treatment. */
+  .portrait.sick:not(.deceased) { filter: grayscale(0.5) brightness(1.05) saturate(0.7) hue-rotate(-8deg); }
 
   /* Roundrone doesn't share Bina's rose/pink emotional-tint palette - these
      glow/desaturate filters (and the pink "awake" glow below) were built
@@ -614,9 +631,9 @@
     word-break: break-word;
     white-space: pre-wrap;
   }
-  .bot { background: var(--bot-bubble); color: #ffe0ec; align-self: flex-start; border-bottom-left-radius: 4px; }
-  .user { background: var(--accent); color: #2a1f30; align-self: flex-end; border-bottom-right-radius: 4px; }
-  .system-msg { font-size: 11px; color: #8a7393; text-align: center; align-self: center; font-style: italic; }
+  .bot { background: var(--custom-bot-bubble, var(--bot-bubble)); color: var(--custom-bot-text, #ffe0ec); align-self: flex-start; border-bottom-left-radius: 4px; }
+  .user { background: var(--custom-user-bubble, var(--accent)); color: var(--custom-user-text, #2a1f30); align-self: flex-end; border-bottom-right-radius: 4px; }
+  .system-msg { font-size: 11px; color: var(--custom-ui-text, #8a7393); text-align: center; align-self: center; font-style: italic; }
 
   /* ---- Timeline manipulation controls (regenerate / rewind / delete / edit) ----
      A tiny row of icon buttons tucked under each user/bot bubble. Tapping the
@@ -809,6 +826,18 @@
     display: flex; align-items: center; justify-content: center;
     box-shadow: 0 1px 4px rgba(0,0,0,0.4);
   }
+  .coinPill {
+    height: 34px;
+    padding: 0 12px;
+    border-radius: 999px;
+    background: rgba(var(--bg-top-rgb),0.55);
+    border: 1px solid rgba(255,255,255,0.15);
+    display: flex; align-items: center; gap: 4px;
+    font-size: 13px; font-weight: 700; color: #ffd76a;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+    backdrop-filter: blur(6px);
+    cursor: pointer;
+  }
   .cornerBtn {
     position: relative;
     width: 34px; height: 34px; border-radius: 50%;
@@ -848,7 +877,7 @@
     position: fixed;
     top: 0; right: 0;
     height: 100%;
-    height: 100dvh;
+    height: 100svh; /* same reflow-storm fix as body above - these are fixed overlays, no reason to recompute every keyboard-animation frame either */
     width: min(78vw, 300px);
     background: var(--glass-bg);
     backdrop-filter: var(--glass-blur);
@@ -869,7 +898,7 @@
     position: fixed;
     top: 0; left: 0;
     height: 100%;
-    height: 100dvh;
+    height: 100svh; /* same reflow-storm fix as body above - these are fixed overlays, no reason to recompute every keyboard-animation frame either */
     width: min(78vw, 300px);
     background: var(--glass-bg);
     backdrop-filter: var(--glass-blur);
@@ -909,6 +938,15 @@
     background-size: 200% 100%;
     animation: bothTabShimmer 3.5s ease-in-out infinite;
   }
+  /* PERF FIX: .active stays on this menu item for the entire time someone's
+     in Roundgroup mode - which could be most of a session - not just while
+     the drawer is actually open to look at it. The drawer itself is never
+     removed from the DOM when closed, only translated off-screen (see
+     .menuDrawer above), so without this the shimmer was ticking forever in
+     the background the whole time, the same class of always-on-animation
+     issue as the aurora backdrop fix earlier in this file - just smaller.
+     Only worth animating while it's actually visible to look at. */
+  .menuDrawer:not(.open) .menuListItem.active { animation-play-state: paused; }
   @keyframes bothTabShimmer {
     0%, 100% { background-position: 0% 0; }
     50% { background-position: 15% 0; }
@@ -1286,6 +1324,26 @@
   .backupRestoreRow { display: flex; gap: 8px; margin-top: 6px; }
   .backupRestoreRow .iconBtn { flex: 1; text-align: center; }
 
+  .colorPickerRow {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    margin-top: 8px;
+  }
+  .colorPickerRow label { font-size: 0.85em; opacity: 0.85; margin: 0; white-space: normal; }
+  .colorPickerRow input[type="color"] {
+    width: 40px;
+    height: 30px;
+    padding: 0;
+    border: 1px solid var(--glass-border, rgba(255,255,255,0.18));
+    border-radius: 8px;
+    background: none;
+    cursor: pointer;
+    flex-shrink: 0;
+  }
+  #resetCustomColorsBtn { margin-top: 10px; width: 100%; }
+
   /* ---- Scenarios modal ---- */
   /* ---- Streak modal ---- */
   .streakDisplay { text-align: center; padding: 14px 0 6px; }
@@ -1364,6 +1422,26 @@
     body.bothMode::before, .charTab.active, .dualPortraitRow,
     #bothHeader.visible, #singleHeader.visible { animation: none !important; }
     body, body.bothMode { transition: none !important; animation: none !important; background-position: 0% 0%, 100% 0%, 0% 0% !important; }
+    body::before, .portraitFloatWrap { animation: none !important; }
+  }
+
+  /* PERF/HEAT FIX: unlike JS timers, `animation: ... infinite` keeps running
+     even while this PWA is backgrounded/minimized or the screen is off - it
+     is never automatically throttled the way rAF/setInterval are. body::before
+     (the blurred aurora backdrop) is the worst offender: a full-viewport
+     blur(24px) over 3 gradient layers, animating forever with nothing to ever
+     stop it, so the GPU was doing that work nonstop for as long as the app
+     was simply *open*, whether anyone was looking at it or not - that's the
+     sustained background compositing load that was heating phones up.
+     Pausing every decorative infinite animation the instant the tab isn't
+     visible (and resuming on return) removes that entirely, since there's
+     nothing to actually see while backgrounded anyway. */
+  body.appBackgrounded::before,
+  body.appBackgrounded.bothMode::before,
+  body.appBackgrounded .mote,
+  body.appBackgrounded .tomato,
+  body.appBackgrounded .portraitFloatWrap {
+    animation-play-state: paused !important;
   }
 
   /* =====================================================================
@@ -1754,6 +1832,19 @@
   .builderStatRow .bsr-sub { display:grid; grid-template-columns:1fr 1fr; gap:6px; }
   .builderStatRow input.bsr-detail { background:#160f1a; border:1px solid rgba(255,143,177,0.16); border-radius:8px; color:var(--muted); font-size:10.5px; padding:6px 8px; }
 
+  .builderMoodTier {
+    background: #241a29; border: 1px solid rgba(255,143,177,0.16); border-radius: 12px; padding: 10px;
+    margin-bottom: 10px;
+  }
+  .builderMoodTier .bmt-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; gap: 8px; }
+  .builderMoodTier .bmt-header span { font-size: 10.5px; color: var(--muted); font-weight: 700; text-transform: uppercase; letter-spacing: .04em; }
+  .builderMoodTier .bmt-header button { background: none; border: none; color: var(--muted); font-size: 15px; cursor: pointer; flex-shrink: 0; }
+  .builderMoodTier .bmt-min { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--muted); margin-bottom: 8px; }
+  .builderMoodTier .bmt-min input {
+    width: 56px; background: #160f1a; border: 1px solid rgba(255,143,177,0.16);
+    border-radius: 8px; color: #fff; font-size: 12.5px; padding: 5px 6px; text-align: center;
+  }
+
   .builderSlotList { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; }
   .builderSlot { display: grid; grid-template-columns: 44px 1fr auto auto; align-items: center; gap: 8px; }
   .builderSlot .b-thumb {
@@ -1881,3 +1972,215 @@
   .groupSelectCount { font-size: 12.5px; color: var(--muted); }
   .groupSelectStartBtn { width: auto; font-size: 13.5px; padding: 10px 18px; }
   .groupSelectStartBtn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+  /* ---- Accessories, coins, achievements & sickness ---------------------- */
+
+  .accessoryOverlay {
+    position: absolute;
+    pointer-events: none;
+    z-index: 6; /* above every expression layer beneath it (see renderPortraitImages) */
+  }
+
+  .accessoryGrid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 10px;
+    margin-top: 12px;
+  }
+  .accessoryCard {
+    background: rgba(255,255,255,0.06);
+    border: 1px solid rgba(255,255,255,0.12);
+    border-radius: 12px;
+    padding: 8px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
+  }
+  .accessoryThumb {
+    width: 64px;
+    height: 64px;
+    object-fit: contain;
+    background:
+      linear-gradient(45deg, rgba(255,255,255,0.08) 25%, transparent 25%) -8px 0/16px 16px,
+      linear-gradient(-45deg, rgba(255,255,255,0.08) 25%, transparent 25%) -8px 0/16px 16px,
+      linear-gradient(45deg, transparent 75%, rgba(255,255,255,0.08) 75%) -8px 0/16px 16px,
+      linear-gradient(-45deg, transparent 75%, rgba(255,255,255,0.08) 75%) -8px 0/16px 16px;
+    border-radius: 8px;
+  }
+  .accessoryNameInput {
+    width: 100%;
+    text-align: center;
+    font-size: 12px;
+    background: rgba(0,0,0,0.2);
+    border: 1px solid rgba(255,255,255,0.15);
+    border-radius: 6px;
+    color: var(--accent-light);
+    padding: 3px 4px;
+  }
+  .accessoryPlaceRow { display: flex; gap: 4px; width: 100%; }
+  .accessoryPlaceBtn {
+    flex: 1;
+    font-size: 10.5px;
+    padding: 5px 2px;
+    border-radius: 6px;
+    background: rgba(255,255,255,0.08);
+    border: 1px solid rgba(255,255,255,0.15);
+    color: var(--accent-light);
+    cursor: pointer;
+  }
+  .accessoryDeleteBtn {
+    width: 100%;
+    font-size: 11px;
+    padding: 4px;
+    border-radius: 6px;
+    background: rgba(255,90,90,0.12);
+    border: 1px solid rgba(255,90,90,0.3);
+    color: #ffb3b3;
+    cursor: pointer;
+  }
+
+  .accessoryPlacerCanvas {
+    position: relative;
+    width: 240px;
+    height: 225px;
+    margin: 12px auto;
+    background: radial-gradient(circle at 50% 30%, rgba(255,255,255,0.08), transparent 70%);
+    border: 1px dashed rgba(255,255,255,0.25);
+    border-radius: 14px;
+    overflow: hidden;
+    touch-action: none;
+  }
+  .accessoryPlacerBase {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    opacity: 0.9;
+    pointer-events: none;
+  }
+  .accessoryPlacerItem {
+    position: absolute;
+    cursor: grab;
+    touch-action: none;
+    filter: drop-shadow(0 2px 6px rgba(0,0,0,0.5));
+  }
+  .accessoryPlacerItem:active { cursor: grabbing; }
+  .accessoryPlacerControls {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin: 4px 0 8px;
+  }
+  .accessoryPlacerControls label {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    font-size: 12.5px;
+    gap: 10px;
+  }
+  .accessoryPlacerControls input[type="range"] { flex: 1; }
+
+  .coinTotalDisplay {
+    font-size: 22px;
+    font-weight: 800;
+    color: #ffd76a;
+    text-align: center;
+    margin: 6px 0 4px;
+  }
+  .achievementItem {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px;
+    margin-top: 8px;
+    border-radius: 12px;
+    background: rgba(255,255,255,0.05);
+    border: 1px solid rgba(255,255,255,0.1);
+  }
+  .achievementItem.earned { background: rgba(255,215,106,0.1); border-color: rgba(255,215,106,0.35); }
+  .achievementItem.locked { opacity: 0.55; }
+  .achievementIcon { font-size: 22px; width: 30px; text-align: center; flex-shrink: 0; }
+  .achievementText { flex: 1; min-width: 0; }
+  .achievementLabel { font-size: 13.5px; font-weight: 700; color: var(--accent-light); }
+  .achievementDesc { font-size: 11.5px; color: var(--muted); margin-top: 1px; }
+  .achievementReward { font-size: 12px; font-weight: 700; color: #ffd76a; flex-shrink: 0; }
+
+  .achievementToast {
+    position: fixed;
+    left: 50%;
+    top: calc(env(safe-area-inset-top) + 56px);
+    transform: translate(-50%, -20px);
+    opacity: 0;
+    z-index: 200;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    background: linear-gradient(180deg, rgba(60,45,30,0.95), rgba(35,25,20,0.95));
+    border: 1px solid rgba(255,215,106,0.5);
+    border-radius: 14px;
+    padding: 10px 16px;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+    transition: transform .35s ease, opacity .35s ease;
+    pointer-events: none;
+  }
+  .achievementToast.show { transform: translate(-50%, 0); opacity: 1; }
+  .achievementToastIcon { font-size: 26px; }
+  .achievementToastTitle { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.06em; color: #ffd76a; }
+  .achievementToastName { font-size: 13.5px; font-weight: 700; color: #fff; }
+
+  .gameCard {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 12px;
+    margin-top: 12px;
+    border-radius: 14px;
+    background: rgba(255,255,255,0.06);
+    border: 1px solid rgba(255,255,255,0.14);
+    cursor: pointer;
+  }
+  .gameCard:active { transform: scale(0.98); }
+  .gameCard.locked { opacity: 0.5; cursor: default; }
+  .gameCard.locked:active { transform: none; }
+  .gameCardIcon { font-size: 30px; width: 40px; text-align: center; flex-shrink: 0; }
+  .gameCardText { flex: 1; min-width: 0; }
+  .gameCardTitle { font-size: 14.5px; font-weight: 700; color: var(--accent-light); }
+  .gameCardDesc { font-size: 11.5px; color: var(--muted); margin-top: 2px; }
+  .gameCardPlay { font-size: 12px; font-weight: 700; color: var(--accent); flex-shrink: 0; }
+
+  .bubbleGameTopBar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    font-size: 13px;
+    margin: 8px 0 6px;
+    color: var(--accent-light);
+  }
+  .bubbleGameHint { font-size: 10.5px; color: var(--muted); }
+  .bubbleGameCanvasWrap {
+    position: relative;
+    width: 270px;
+    margin: 0 auto;
+    border-radius: 12px;
+    overflow: hidden;
+    background: radial-gradient(circle at 50% 0%, rgba(255,255,255,0.06), transparent 70%);
+    border: 1px solid rgba(255,255,255,0.15);
+    touch-action: none;
+  }
+  #bubbleGameCanvas { display: block; touch-action: none; }
+  .bubbleGameOverPanel {
+    display: none;
+    position: absolute;
+    inset: 0;
+    background: rgba(20,14,22,0.85);
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    text-align: center;
+    font-size: 14px;
+    color: #fff;
+    padding: 20px;
+  }

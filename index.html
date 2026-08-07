@@ -23,8 +23,10 @@
 <div class="app">
   <div class="cornerControlsLeft" id="cornerControlsLeft">
     <button class="cornerBtn" id="menuToggleBtn" onclick="toggleMenuDrawer()" title="Menu" aria-label="Menu">☰<span class="cornerBtnBadge" id="streakBadge" style="display:none;"></span></button>
+    <button class="coinPill" id="coinPill" onclick="toggleAchievementsModal(true)" title="Coins & achievements">🪙 <span id="coinPillAmount">0</span></button>
   </div>
   <div class="cornerControls" id="cornerControls">
+    <button class="cornerBtn" id="cureSickBtn" onclick="cureActiveCharacterSickness()" title="Give medicine" aria-label="Give medicine" style="display:none;">💊</button>
     <button class="cornerBtn" id="showerBtn" onclick="showerRoundbina()" title="Shower" aria-label="Shower">🚿</button>
     <button class="cornerBtn" id="killBtn" onclick="openKillFlow()" title="Kill (testing)" aria-label="Kill Roundbina (testing feature)">💀</button>
     <button class="cornerBtn" id="galleryToggleBtn" onclick="openRoundieGallery()" title="Roundie Gallery" aria-label="Roundie Gallery">🏠</button>
@@ -162,6 +164,18 @@
         <span class="menuItemIcon">🎨</span>
         <span>Create a background</span>
       </button>
+      <button type="button" class="menuListItem" onclick="toggleAccessoryModal(true); toggleMenuDrawer(false);">
+        <span class="menuItemIcon">🎀</span>
+        <span>Accessories</span>
+      </button>
+      <button type="button" class="menuListItem" onclick="toggleGamesHubModal(true); toggleMenuDrawer(false);">
+        <span class="menuItemIcon">🎮</span>
+        <span>Mini Games</span>
+      </button>
+      <button type="button" class="menuListItem" onclick="toggleAchievementsModal(true); toggleMenuDrawer(false);">
+        <span class="menuItemIcon">🏆</span>
+        <span>Achievements & coins</span>
+      </button>
     </div>
   </div>
 
@@ -208,6 +222,95 @@
       <h2 style="font-size:15px;">Your backgrounds</h2>
     </div>
     <div id="bgCreatorSavedList"></div>
+  </div>
+
+  <div class="historyBackdrop" id="achievementsBackdrop" onclick="toggleAchievementsModal(false)"></div>
+  <div class="historyModal" id="achievementsModal">
+    <div class="historyModalHeader">
+      <h2>🏆 Achievements</h2>
+      <button class="drawerCloseBtn" onclick="toggleAchievementsModal(false)" aria-label="Close achievements">✕</button>
+    </div>
+    <div class="coinTotalDisplay">🪙 <span id="achCoinTotal">0</span> coins</div>
+    <div class="historyMeta">Earn coins by hitting milestones with your Roundies. Spend them on medicine (💊, 15 coins) to instantly cure sickness whenever it shows up.</div>
+    <div id="achievementList"></div>
+  </div>
+
+  <div class="historyBackdrop" id="accessoryBackdrop" onclick="toggleAccessoryModal(false)"></div>
+  <div class="historyModal" id="accessoryModal">
+    <div class="historyModalHeader">
+      <h2>🎀 Accessories</h2>
+      <button class="drawerCloseBtn" onclick="toggleAccessoryModal(false)" aria-label="Close accessories">✕</button>
+    </div>
+    <div class="historyMeta">Draw your own tiny hats, bows, glasses - anything with a transparent background - then import it here and place it on whichever Roundie you like. That one placement is reused everywhere her portrait shows up.</div>
+    <input type="file" id="accessoryFileInput" accept="image/png,image/webp,image/gif" style="display:none" onchange="importAccessoryFile(event)" />
+    <div class="historyModalActions">
+      <button class="iconBtn" onclick="document.getElementById('accessoryFileInput').click()">➕ import accessory</button>
+    </div>
+    <div id="accessoryGrid" class="accessoryGrid"></div>
+  </div>
+
+  <div class="historyBackdrop" id="accessoryPlacerBackdrop" onclick="closeAccessoryPlacer()"></div>
+  <div class="historyModal" id="accessoryPlacerModal">
+    <div class="historyModalHeader">
+      <h2 id="accessoryPlacerTitle">Place accessory</h2>
+      <button class="drawerCloseBtn" onclick="closeAccessoryPlacer()" aria-label="Close placer">✕</button>
+    </div>
+    <div class="historyMeta">Drag the accessory into position. This exact spot is reused on every one of her portraits (main view and Roundboth).</div>
+    <div class="accessoryPlacerCanvas" id="accessoryPlacerCanvas">
+      <img class="accessoryPlacerBase" id="accessoryPlacerBaseImg" alt="" />
+      <img class="accessoryPlacerItem" id="accessoryPlacerItemImg" alt="" />
+    </div>
+    <div class="accessoryPlacerControls">
+      <label>Size <input type="range" id="accessoryScaleInput" min="10" max="150" value="40" /></label>
+      <label>Rotate <input type="range" id="accessoryRotateInput" min="-180" max="180" value="0" /></label>
+    </div>
+    <div class="historyModalActions">
+      <button class="iconBtn" id="accessoryUnequipBtn" onclick="unequipCurrentPlacerAccessory()">🗑️ remove from her</button>
+      <button class="iconBtn" onclick="saveAccessoryPlacement()">💾 save placement</button>
+    </div>
+  </div>
+
+  <div class="historyBackdrop" id="gamesHubBackdrop" onclick="toggleGamesHubModal(false)"></div>
+  <div class="historyModal" id="gamesHubModal">
+    <div class="historyModalHeader">
+      <h2>🎮 Mini Games</h2>
+      <button class="drawerCloseBtn" onclick="toggleGamesHubModal(false)" aria-label="Close mini games">✕</button>
+    </div>
+    <div class="historyMeta">Small games using your Roundies' own portraits, with achievements and coins tied to how you do in them.</div>
+    <div class="gameCard" onclick="toggleGamesHubModal(false); openBubbleGame();">
+      <div class="gameCardIcon">🫧</div>
+      <div class="gameCardText">
+        <div class="gameCardTitle">Roundie Pop</div>
+        <div class="gameCardDesc" id="bubbleGameHighScore">Not played yet</div>
+      </div>
+      <div class="gameCardPlay">Play ▶</div>
+    </div>
+    <div class="gameCard locked">
+      <div class="gameCardIcon">🔒</div>
+      <div class="gameCardText">
+        <div class="gameCardTitle">More games coming soon</div>
+        <div class="gameCardDesc">Got an idea? This hub's built to grow.</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="historyBackdrop" id="bubbleGameBackdrop" onclick="closeBubbleGame()"></div>
+  <div class="historyModal" id="bubbleGameModal">
+    <div class="historyModalHeader">
+      <h2>🫧 Roundie Pop</h2>
+      <button class="drawerCloseBtn" onclick="closeBubbleGame()" aria-label="Close Roundie Pop">✕</button>
+    </div>
+    <div class="bubbleGameTopBar">
+      <span>Score: <b id="bubbleGameScore">0</b></span>
+      <span class="bubbleGameHint">Drag to aim, release to shoot · match 3+</span>
+    </div>
+    <div class="bubbleGameCanvasWrap">
+      <canvas id="bubbleGameCanvas"></canvas>
+      <div class="bubbleGameOverPanel" id="bubbleGameOverPanel">
+        <div id="bubbleGameOverText">Game over</div>
+        <button class="iconBtn" onclick="initBubbleGame()">🔄 play again</button>
+      </div>
+    </div>
   </div>
 
   <div class="historyBackdrop" id="streakBackdrop" onclick="toggleStreakModal(false)"></div>
@@ -278,6 +381,31 @@
           <div class="themeSwatchRow" id="themeSwatchRow"></div>
         </div>
         <div class="drawerSection">
+          <label>🖌️ custom chat colors</label>
+          <div class="historyMeta">Overrides the theme above just for these - leave any of them alone to keep the theme's normal color.</div>
+          <div class="colorPickerRow">
+            <label for="uiTextColorInput">UI text (names, labels, system messages)</label>
+            <input type="color" id="uiTextColorInput" />
+          </div>
+          <div class="colorPickerRow">
+            <label for="userTextColorInput">Your message text</label>
+            <input type="color" id="userTextColorInput" />
+          </div>
+          <div class="colorPickerRow">
+            <label for="userBubbleColorInput">Your message bubble</label>
+            <input type="color" id="userBubbleColorInput" />
+          </div>
+          <div class="colorPickerRow">
+            <label for="botTextColorInput">Her message text</label>
+            <input type="color" id="botTextColorInput" />
+          </div>
+          <div class="colorPickerRow">
+            <label for="botBubbleColorInput">Her message bubble</label>
+            <input type="color" id="botBubbleColorInput" />
+          </div>
+          <button class="iconBtn" id="resetCustomColorsBtn" onclick="resetCustomColors()">↩️ reset to theme colors</button>
+        </div>
+        <div class="drawerSection">
           <div class="tokenControl">
             <label for="tokenSlider">📝 reply length: <span id="tokenValue">300</span></label>
             <input type="range" id="tokenSlider" min="60" max="800" step="20" value="300">
@@ -341,9 +469,10 @@
           <input id="googleApiKeyInput" type="password" placeholder="AIza..." autocomplete="off" />
           <label for="googleModelInput" style="margin-top:8px;">🧠 backup connection model name</label>
           <input id="googleModelInput" type="text" placeholder="gemma-4-31b-it" autocomplete="off" />
+          <button class="iconBtn" id="saveBackupConnectionBtn" onclick="saveConnectionSettings()" style="margin-top:8px;">💾 save backup connection</button>
         </div>
         <div class="drawerSection">
-          <button class="iconBtn" id="saveConnectionBtn" onclick="saveConnectionSettings()">💾 save proxy settings</button>
+          <button class="iconBtn" id="saveConnectionBtn" onclick="saveConnectionSettings()">💾 save connection settings (all of the above)</button>
         </div>
       </div>
     </details>
@@ -546,15 +675,10 @@
       </div>
 
       <div class="drawerSection">
-        <label>Palette</label>
-        <div class="builderPaletteGrid">
-          <div class="builderSwatch"><input type="color" id="b-c-accent" value="#ff8fb1"><span>accent</span></div>
-          <div class="builderSwatch"><input type="color" id="b-c-accentLight" value="#ffd6e8"><span>accent light</span></div>
-          <div class="builderSwatch"><input type="color" id="b-c-muted" value="#b79bc4"><span>muted</span></div>
-          <div class="builderSwatch"><input type="color" id="b-c-bgTop" value="#3a2b3f"><span>bg top</span></div>
-          <div class="builderSwatch"><input type="color" id="b-c-bgBottom" value="#1b1420"><span>bg bottom</span></div>
-          <div class="builderSwatch"><input type="color" id="b-c-botBubble" value="#4a3453"><span>bot bubble</span></div>
-        </div>
+        <label>Mood-based palettes</label>
+        <div class="historyMeta">Give them a different color scheme for each affection level, same as Roundbina/Roundrone/Roundecchino already have — the background/accent/bubble colors shift live as your bond with them changes. Add as many tiers as you like; each needs a minimum affection (0-100) it kicks in at. Only one tier (min 0) is required.</div>
+        <div id="b-moodTierList" style="margin-top:10px;"></div>
+        <button class="iconBtn" id="b-addMoodTierBtn" type="button" style="margin-top:8px;">+ add mood tier</button>
       </div>
 
       <div class="drawerSection">
