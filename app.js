@@ -4505,6 +4505,55 @@ contextSlider.addEventListener("input", () => {
   localStorage.setItem(LS.MAX_CONTEXT, contextSlider.value);
 });
 
+// ---- Overlay show/hide helper ---------------------------------------------
+// Modals/drawers/backdrops used to just sit permanently in the DOM with
+// display:flex, faded out via opacity:0 + pointer-events:none while "closed".
+// That's the classic CSS "invisible" trick, and it's laggy: a full-viewport
+// fixed element with backdrop-filter:blur() still gets laid out, painted and
+// composited every frame even at opacity 0, and there are ~15 of these
+// stacked up at all times. Now they're actually unrendered (display:none)
+// while closed, and only get put back in the render tree for the moment
+// they're opening/animating closed - the CSS transition/animation classes
+// still work exactly as before, we just don't pay for them while hidden.
+function setOverlayOpen(modal, backdrop, open, opts) {
+  const els = [modal, backdrop].filter(Boolean);
+  if (!els.length) return;
+  const focusEl = opts && opts.focus;
+  if (open) {
+    // Put back in the render tree first, then flip the class a couple of
+    // frames later so the browser actually has a "closed" state to
+    // transition from (skipping straight to display:flex + .open at the
+    // same time would just snap open with no animation).
+    els.forEach(el => { el.style.display = ""; });
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        els.forEach(el => el.classList.add("open"));
+        if (focusEl) focusEl.focus();
+      });
+    });
+  } else {
+    els.forEach(el => el.classList.remove("open"));
+    els.forEach(el => unrenderAfterTransition(el));
+  }
+}
+
+function unrenderAfterTransition(el) {
+  if (!el) return;
+  let done = false;
+  const finish = () => {
+    if (done) return;
+    done = true;
+    el.style.display = "none";
+    el.removeEventListener("transitionend", onEnd);
+  };
+  const onEnd = (e) => { if (e.target === el) finish(); };
+  el.addEventListener("transitionend", onEnd);
+  // Fallback in case transitionend never fires (reduced-motion users,
+  // already-hidden elements, etc.) so we never get stuck "invisible but
+  // still fully rendered."
+  setTimeout(finish, 420);
+}
+
 // ---- Settings drawer (holds "New chat" + reply-length slider) ----------
 // Slides in from the right so it never overlaps the shower button.
 const settingsDrawer = document.getElementById("settingsDrawer");
@@ -4514,8 +4563,7 @@ function toggleSettingsDrawer(forceOpen) {
   const shouldOpen = typeof forceOpen === "boolean"
     ? forceOpen
     : !settingsDrawer.classList.contains("open");
-  settingsDrawer.classList.toggle("open", shouldOpen);
-  drawerBackdrop.classList.toggle("open", shouldOpen);
+  setOverlayOpen(settingsDrawer, drawerBackdrop, shouldOpen);
 }
 
 // ---- Left menu + Streak ---------------------------------------------------
@@ -4525,8 +4573,7 @@ const menuDrawer = document.getElementById("menuDrawer");
 const menuDrawerBackdrop = document.getElementById("menuDrawerBackdrop");
 function toggleMenuDrawer(forceOpen) {
   const shouldOpen = typeof forceOpen === "boolean" ? forceOpen : !menuDrawer.classList.contains("open");
-  menuDrawer.classList.toggle("open", shouldOpen);
-  menuDrawerBackdrop.classList.toggle("open", shouldOpen);
+  setOverlayOpen(menuDrawer, menuDrawerBackdrop, shouldOpen);
 }
 
 // Streak is app-wide (not per-character) - it's about you showing up at
@@ -4651,8 +4698,7 @@ function toggleStreakModal(forceState) {
     toggleMenuDrawer(false);
     renderStreakModal();
   }
-  streakModal.classList.toggle("open", shouldOpen);
-  streakBackdrop.classList.toggle("open", shouldOpen);
+  setOverlayOpen(streakModal, streakBackdrop, shouldOpen);
 }
 
 // ---- Custom background creator (hamburger menu) --------------------------
@@ -4664,8 +4710,7 @@ function toggleBgCreatorModal(forceState) {
     renderBgCreatorSavedList();
     updateBgCreatorPreview();
   }
-  modal.classList.toggle("open", shouldOpen);
-  backdrop.classList.toggle("open", shouldOpen);
+  setOverlayOpen(modal, backdrop, shouldOpen);
 }
 
 // Repaints the little preview card inside the creator to match whatever
@@ -4949,8 +4994,7 @@ function toggleHistoryModal(forceOpen) {
     ? forceOpen
     : !historyModal.classList.contains("open");
   if (shouldOpen) renderHistoryModal();
-  historyModal.classList.toggle("open", shouldOpen);
-  historyBackdrop.classList.toggle("open", shouldOpen);
+  setOverlayOpen(historyModal, historyBackdrop, shouldOpen);
 }
 
 function copyHistoryData() {
@@ -6295,8 +6339,7 @@ function openReviveFlow() {
 
 function toggleReviveModal(forceState) {
   const shouldOpen = typeof forceState === "boolean" ? forceState : !reviveModal.classList.contains("open");
-  reviveModal.classList.toggle("open", shouldOpen);
-  reviveBackdrop.classList.toggle("open", shouldOpen);
+  setOverlayOpen(reviveModal, reviveBackdrop, shouldOpen);
   if (shouldOpen) reviveTextarea.focus();
 }
 
@@ -6383,8 +6426,7 @@ function openKillFlow() {
 
 function toggleKillModal(forceState) {
   const shouldOpen = typeof forceState === "boolean" ? forceState : !killModal.classList.contains("open");
-  killModal.classList.toggle("open", shouldOpen);
-  killBackdrop.classList.toggle("open", shouldOpen);
+  setOverlayOpen(killModal, killBackdrop, shouldOpen);
   if (shouldOpen) killTextarea.focus();
 }
 
@@ -6558,8 +6600,7 @@ function triggerSamuraiDefense() {
       toggleSettingsDrawer(false);
       renderScenariosList();
     }
-    scenariosModal.classList.toggle("open", shouldOpen);
-    scenariosBackdrop.classList.toggle("open", shouldOpen);
+    setOverlayOpen(scenariosModal, scenariosBackdrop, shouldOpen);
   };
 
   // ---- Craft a Story ------------------------------------------------------
@@ -6656,8 +6697,7 @@ function triggerSamuraiDefense() {
       toggleSettingsDrawer(false);
       renderStoryModal();
     }
-    storyModal.classList.toggle("open", shouldOpen);
-    storyBackdrop.classList.toggle("open", shouldOpen);
+    setOverlayOpen(storyModal, storyBackdrop, shouldOpen);
   };
 
   // Generates a fresh ~100-token setting core for the given genre and
@@ -6985,8 +7025,10 @@ function initFoodTray() {
   if (appEl) appEl.appendChild(tray); else document.body.appendChild(tray);
   foodTrayEl = tray;
 
+  tray.style.display = "none"; // start unrendered - see setOverlayOpen
+
   const closeBtn = tray.querySelector(".foodTrayClose");
-  if (closeBtn) closeBtn.addEventListener("click", () => tray.classList.remove("open"));
+  if (closeBtn) closeBtn.addEventListener("click", () => setOverlayOpen(tray, null, false));
 
   // PERF: the 16 food images were previously decoded at boot even though
   // this tray is hidden until tapped open - that's ~4.5MB of image data
@@ -7006,7 +7048,7 @@ function initFoodTray() {
   toggleBtn.addEventListener("click", () => {
     const willOpen = !tray.classList.contains("open");
     if (willOpen) hydrateFoodImages();
-    tray.classList.toggle("open");
+    setOverlayOpen(tray, null, willOpen);
   });
   tray.querySelectorAll(".foodItem").forEach(setupDraggableFood);
 
@@ -7046,7 +7088,7 @@ function setupDraggableFood(foodEl) {
 
       if (droppedOnAvatar) {
         feedRoundbina(foodEl.dataset.emoji, foodEl.dataset.food);
-        if (foodTrayEl) foodTrayEl.classList.remove("open");
+        if (foodTrayEl) setOverlayOpen(foodTrayEl, null, false);
       }
       ghost.remove();
     };
@@ -7236,8 +7278,7 @@ function toggleAchievementsModal(show) {
   const backdrop = document.getElementById("achievementsBackdrop");
   if (!modal || !backdrop) return;
   const next = show !== undefined ? show : !modal.classList.contains("open");
-  modal.classList.toggle("open", next);
-  backdrop.classList.toggle("open", next);
+  setOverlayOpen(modal, backdrop, next);
   if (next) renderAchievementsList();
 }
 
@@ -7349,8 +7390,7 @@ function toggleAccessoryModal(show) {
   const backdrop = document.getElementById("accessoryBackdrop");
   if (!modal || !backdrop) return;
   const next = show !== undefined ? show : !modal.classList.contains("open");
-  modal.classList.toggle("open", next);
-  backdrop.classList.toggle("open", next);
+  setOverlayOpen(modal, backdrop, next);
   if (next) renderAccessoryGrid();
 }
 
@@ -7384,16 +7424,14 @@ function openAccessoryPlacer(charId, accessoryId) {
 
   const modal = document.getElementById("accessoryPlacerModal");
   const backdrop = document.getElementById("accessoryPlacerBackdrop");
-  if (modal) modal.classList.add("open");
-  if (backdrop) backdrop.classList.add("open");
+  setOverlayOpen(modal, backdrop, true);
 }
 
 function closeAccessoryPlacer() {
   placerState = null;
   const modal = document.getElementById("accessoryPlacerModal");
   const backdrop = document.getElementById("accessoryPlacerBackdrop");
-  if (modal) modal.classList.remove("open");
-  if (backdrop) backdrop.classList.remove("open");
+  setOverlayOpen(modal, backdrop, false);
 }
 
 function applyPlacerTransform() {
@@ -7609,8 +7647,7 @@ function toggleGamesHubModal(show) {
   const backdrop = document.getElementById("gamesHubBackdrop");
   if (!modal || !backdrop) return;
   const next = show !== undefined ? show : !modal.classList.contains("open");
-  modal.classList.toggle("open", next);
-  backdrop.classList.toggle("open", next);
+  setOverlayOpen(modal, backdrop, next);
   if (next) renderGamesHub();
 }
 
@@ -7667,16 +7704,14 @@ function openBubbleGame() {
   const modal = document.getElementById("bubbleGameModal");
   const backdrop = document.getElementById("bubbleGameBackdrop");
   if (!modal || !backdrop) return;
-  modal.classList.add("open");
-  backdrop.classList.add("open");
+  setOverlayOpen(modal, backdrop, true);
   initBubbleGame();
 }
 
 function closeBubbleGame() {
   const modal = document.getElementById("bubbleGameModal");
   const backdrop = document.getElementById("bubbleGameBackdrop");
-  if (modal) modal.classList.remove("open");
-  if (backdrop) backdrop.classList.remove("open");
+  setOverlayOpen(modal, backdrop, false);
   // Stop the render loop the instant the game closes - see the
   // ambient-animation heat fix earlier in this file for exactly why an
   // untracked rAF/animation loop left running is the thing to avoid here.
