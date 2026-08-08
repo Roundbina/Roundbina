@@ -105,6 +105,10 @@ const LS_GLOBAL = {
   // whichever Roundie happens to be active when you open it. ----
   BUBBLE_GAMES_PLAYED: "roundbina_bubbleGamesPlayed",
   BUBBLE_HIGH_SCORE:   "roundbina_bubbleHighScore",
+  ODD_GAMES_PLAYED:    "roundbina_oddGamesPlayed",
+  ODD_HIGH_SCORE:      "roundbina_oddHighScore",
+  CATCH_GAMES_PLAYED:  "roundbina_catchGamesPlayed",
+  CATCH_HIGH_SCORE:    "roundbina_catchHighScore",
 
   // ---- Accessory library (see same section) - the imported IMAGES
   // themselves are global (one shared closet), while which of them are
@@ -7193,6 +7197,28 @@ function spendCoins(amount) {
   addCoins(-amount);
   return true;
 }
+
+// ---- Testing cheat code -------------------------------------------------
+// A quick way to load up on coins for trying out the accessory shop, the
+// mini-games' reward payouts, etc. without actually grinding for them.
+// Case/whitespace-insensitive on purpose so it's not fussy to type.
+const CHEAT_CODES = {
+  "1000coins": () => { addCoins(1000); return "🪙 +1000 coins. Testing mode, don't tell anyone. 🤫"; },
+};
+function redeemCheatCode() {
+  const input = document.getElementById("cheatCodeInput");
+  if (!input) return;
+  const code = input.value.trim().toLowerCase();
+  input.value = "";
+  if (!code) return;
+  const handler = CHEAT_CODES[code];
+  if (handler) {
+    addMsg(handler(), "system-msg", { persist: false });
+    sfxTick();
+  } else {
+    addMsg(`"${code}" isn't a code that does anything.`, "system-msg", { persist: false });
+  }
+}
 function renderCoinBadge() {
   const amount = getCoins();
   const pill = document.getElementById("coinPillAmount");
@@ -7224,6 +7250,14 @@ const ACHIEVEMENTS = [
   { id: "high_scorer",   label: "High Scorer",   desc: "Score 500+ in a single game of Roundie Pop.",      icon: "⭐", reward: 25 },
   { id: "board_clearer", label: "Board Clearer", desc: "Clear the entire board in Roundie Pop.",           icon: "🧹", reward: 40 },
   { id: "pop_addict",    label: "Pop Addict",    desc: "Play 10 rounds of Roundie Pop.",                   icon: "🎮", reward: 20 },
+
+  // ---- Mini games (Odd Roundie Out) ----
+  { id: "sharp_eye",     label: "Sharp Eye",     desc: "Play a round of Odd Roundie Out.",                 icon: "🔍", reward: 10 },
+  { id: "eagle_eye",     label: "Eagle Eye",     desc: "Get a 10-round streak in Odd Roundie Out.",        icon: "🦅", reward: 30 },
+
+  // ---- Mini games (Roundie Catch) ----
+  { id: "good_catch",    label: "Good Catch",    desc: "Play a round of Roundie Catch.",                   icon: "🧺", reward: 10 },
+  { id: "full_belly",    label: "Full Belly",    desc: "Catch 30 food items in a single game of Roundie Catch.", icon: "🍱", reward: 25 },
 ];
 
 function getEarnedAchievements() {
@@ -7774,6 +7808,16 @@ function renderGamesHub() {
   const { played, highScore } = getGamesHubStats();
   const scoreEl = document.getElementById("bubbleGameHighScore");
   if (scoreEl) scoreEl.textContent = highScore ? `High score: ${highScore} · ${played} played` : "Not played yet";
+
+  const oddPlayed = parseInt(localStorage.getItem(LS.ODD_GAMES_PLAYED), 10) || 0;
+  const oddHigh = parseInt(localStorage.getItem(LS.ODD_HIGH_SCORE), 10) || 0;
+  const oddEl = document.getElementById("oddGameHighScore");
+  if (oddEl) oddEl.textContent = oddHigh ? `High score: ${oddHigh} · ${oddPlayed} played` : "Not played yet";
+
+  const catchPlayed = parseInt(localStorage.getItem(LS.CATCH_GAMES_PLAYED), 10) || 0;
+  const catchHigh = parseInt(localStorage.getItem(LS.CATCH_HIGH_SCORE), 10) || 0;
+  const catchEl = document.getElementById("catchGameHighScore");
+  if (catchEl) catchEl.textContent = catchHigh ? `High score: ${catchHigh} · ${catchPlayed} played` : "Not played yet";
 }
 
 // ---- Roundie Pop: hex-grid bubble shooter ---------------------------------
@@ -7880,6 +7924,7 @@ function initBubbleGame() {
     aiming: false,
     over: false,
     rafId: null,
+    effects: [], // transient pop/fall animations - see popMatchesAt/dropFloatingBubbles
   };
 
   const scoreEl = document.getElementById("bubbleGameScore");
@@ -7895,8 +7940,14 @@ function bubbleAngleFromEvent(e) {
   const rect = canvas.getBoundingClientRect();
   const clientX = e.touches ? e.touches[0].clientX : e.clientX;
   const clientY = e.touches ? e.touches[0].clientY : e.clientY;
-  const x = (clientX - rect.left) * (canvas.width / rect.width);
-  const y = (clientY - rect.top) * (canvas.height / rect.height);
+  // Map CSS pixels straight to logical game-space (BUBBLE_CANVAS_W/H) - NOT
+  // canvas.width/height, which is the physical backing-store resolution
+  // (CSS size * devicePixelRatio) since the retina-canvas fix. Dividing by
+  // that instead of the logical size was scaling every pointer position by
+  // the device pixel ratio, which is exactly why aiming felt broken/way off
+  // on any phone with dpr > 1 (i.e. basically every phone).
+  const x = (clientX - rect.left) * (BUBBLE_CANVAS_W / rect.width);
+  const y = (clientY - rect.top) * (BUBBLE_CANVAS_H / rect.height);
   let angle = Math.atan2(BUBBLE_SHOOTER_Y - y, x - BUBBLE_SHOOTER_X);
   return Math.max(0.18, Math.min(Math.PI - 0.18, angle));
 }
@@ -7913,19 +7964,49 @@ function initBubbleGameControls() {
   const moveAim = (e) => {
     if (!bubbleGame || !bubbleGame.aiming) return;
     bubbleGame.aimAngle = bubbleAngleFromEvent(e);
+    e.preventDefault();
   };
-  const releaseAim = () => {
+  const releaseAim = (e) => {
     if (!bubbleGame || !bubbleGame.aiming) return;
     bubbleGame.aiming = false;
     fireBubbleShot();
+    if (e) e.preventDefault();
   };
+  // Pointer Events alone cover mouse AND touch on every browser this PWA
+  // targets - the previous version ALSO wired separate touchstart/move/end
+  // listeners on top, so a single tap on a touchscreen fired both the
+  // pointer and touch handlers for the same gesture. Harmless for aiming
+  // itself (same value written twice), but it's needless double work every
+  // frame while dragging, and one more moving part to go wrong. One event
+  // family is simpler and just as compatible.
   canvas.addEventListener("pointerdown", startAim);
   canvas.addEventListener("pointermove", moveAim);
   window.addEventListener("pointerup", releaseAim);
-  canvas.addEventListener("touchstart", startAim, { passive: false });
-  canvas.addEventListener("touchmove", moveAim, { passive: false });
-  window.addEventListener("touchend", releaseAim);
 }
+
+// ---- Sound cues (see playTone/sfx* near the audio setup for the shared
+// synth helper) - kept local to this section since they're specific to
+// Roundie Pop and nowhere else needs them.
+function sfxBubbleShoot() { playTone(340, { duration: 0.07, type: "triangle", gain: 0.04 }); }
+function sfxBubbleLand()  { playTone(260, { duration: 0.06, type: "sine", gain: 0.03 }); }
+function sfxBubblePop(count) {
+  // A little ascending run, one extra note per bubble past the first three
+  // (capped so a huge chain doesn't turn into a siren) - bigger matches
+  // sound more rewarding without needing separate sample assets.
+  const notes = Math.max(1, Math.min(6, count - 2));
+  for (let i = 0; i < notes; i++) {
+    playTone(520 + i * 90, { duration: 0.1, type: "sine", gain: 0.04, delay: i * 0.035 });
+  }
+}
+function sfxBubbleDrop(count) {
+  const notes = Math.max(1, Math.min(5, Math.round(count / 2)));
+  for (let i = 0; i < notes; i++) {
+    playTone(420 - i * 55, { duration: 0.11, type: "triangle", gain: 0.035, delay: i * 0.04 });
+  }
+}
+function sfxBubbleNewRow() { playTone(200, { duration: 0.16, type: "sawtooth", gain: 0.03 }); }
+function sfxBubbleWin()  { playTone(660, { duration: 0.13, gain: 0.045 }); playTone(880, { duration: 0.15, gain: 0.04, delay: 0.07 }); playTone(1100, { duration: 0.22, gain: 0.035, delay: 0.14 }); }
+function sfxBubbleLose() { playTone(300, { duration: 0.16, type: "sawtooth", gain: 0.035 }); playTone(220, { duration: 0.22, type: "sawtooth", gain: 0.035, delay: 0.09 }); }
 
 function fireBubbleShot() {
   if (!bubbleGame || bubbleGame.over || bubbleGame.shot) return;
@@ -7937,6 +8018,7 @@ function fireBubbleShot() {
     type: bubbleGame.currentType,
   };
   bubbleGame.shotsFired++;
+  sfxBubbleShoot();
 }
 
 function bubbleXyToNearestCell(x, y) {
@@ -7995,8 +8077,17 @@ function popMatchesAt(row, col) {
   }
 
   if (group.length < 3) return;
-  group.forEach(([r, c]) => bubbleGame.grid.delete(bubbleCellKey(r, c)));
+  // Capture position/type before deleting so the pop animation has
+  // something to animate away from - see bubbleGame.effects handling in
+  // updateBubbleGame/drawBubbleGame.
+  const now = performance.now();
+  group.forEach(([r, c]) => {
+    const { x, y } = bubbleCellToXY(r, c);
+    bubbleGame.effects.push({ kind: "pop", x, y, type: bubbleGame.grid.get(bubbleCellKey(r, c)), start: now });
+    bubbleGame.grid.delete(bubbleCellKey(r, c));
+  });
   bubbleGame.score += group.length * 10;
+  sfxBubblePop(group.length);
   if (group.length >= 5) awardAchievement("combo_starter");
   dropFloatingBubbles();
 }
@@ -8025,10 +8116,22 @@ function dropFloatingBubbles() {
     frontier = next;
   }
   let dropped = 0;
+  const now = performance.now();
   for (const key of Array.from(bubbleGame.grid.keys())) {
-    if (!reachable.has(key)) { bubbleGame.grid.delete(key); dropped++; }
+    if (!reachable.has(key)) {
+      const [r, c] = key.split(",").map(Number);
+      const { x, y } = bubbleCellToXY(r, c);
+      // Falling bubbles get a random sideways drift so a whole dropped
+      // cluster doesn't visually fall as one rigid block.
+      bubbleGame.effects.push({ kind: "fall", x, y, type: bubbleGame.grid.get(key), start: now, drift: (Math.random() - 0.5) * 40 });
+      bubbleGame.grid.delete(key);
+      dropped++;
+    }
   }
-  if (dropped) bubbleGame.score += dropped * 20;
+  if (dropped) {
+    bubbleGame.score += dropped * 20;
+    sfxBubbleDrop(dropped);
+  }
 
   if (bubbleGame.grid.size === 0) endBubbleGame(true);
 }
@@ -8043,6 +8146,7 @@ function pushNewBubbleRow() {
     shifted.set(bubbleCellKey(0, col), randomBubbleType());
   }
   bubbleGame.grid = shifted;
+  sfxBubbleNewRow();
 }
 
 function checkBubbleGameOver() {
@@ -8076,6 +8180,7 @@ function endBubbleGame(won) {
       : `Game over - ${bubbleGame.score} points · +${coinsEarned} 🪙`;
   }
   if (overEl) overEl.style.display = "flex";
+  if (won) sfxBubbleWin(); else sfxBubbleLose();
 }
 
 function updateBubbleGame() {
@@ -8099,6 +8204,7 @@ function updateBubbleGame() {
     if (landed) {
       const cell = findEmptyLandingCell(g.shot.x, g.shot.y);
       g.grid.set(bubbleCellKey(cell.row, cell.col), g.shot.type);
+      sfxBubbleLand();
       popMatchesAt(cell.row, cell.col);
       g.shot = null;
       g.currentType = g.nextType;
@@ -8107,6 +8213,10 @@ function updateBubbleGame() {
       if (!g.over && checkBubbleGameOver()) endBubbleGame(false);
     }
   }
+  // Age out finished pop/fall animations (both run ~300ms - see PAUSE_MS
+  // below in drawBubbleGame) so the effects list never grows unbounded.
+  const now = performance.now();
+  g.effects = g.effects.filter(fx => now - fx.start < 320);
   const scoreEl = document.getElementById("bubbleGameScore");
   if (scoreEl) scoreEl.textContent = String(g.score);
 }
@@ -8141,6 +8251,32 @@ function drawBubbleGame() {
     drawFace(x, y, type);
   }
 
+  // Pop/fall animations - drawn on top of the settled grid so a matched or
+  // dropped bubble visibly detaches and shrinks/falls away instead of just
+  // blinking out of existence.
+  const now = performance.now();
+  for (const fx of g.effects) {
+    const t = Math.min(1, (now - fx.start) / 320);
+    ctx.save();
+    if (fx.kind === "pop") {
+      // Quick scale-up-then-shrink with a fade, like a little burst.
+      const scale = t < 0.25 ? 1 + t * 1.2 : 1.3 - (t - 0.25) * 1.7;
+      ctx.globalAlpha = Math.max(0, 1 - t);
+      ctx.translate(fx.x, fx.y);
+      ctx.scale(Math.max(0, scale), Math.max(0, scale));
+      ctx.translate(-fx.x, -fx.y);
+      drawFace(fx.x, fx.y, fx.type);
+    } else if (fx.kind === "fall") {
+      // Gravity-ish fall with a bit of sideways drift and a fade near the
+      // bottom of the arc so it reads as tumbling off the board.
+      const dy = 90 * t * t;
+      const dx = fx.drift * t;
+      ctx.globalAlpha = Math.max(0, 1 - t * t);
+      drawFace(fx.x + dx, fx.y + dy, fx.type);
+    }
+    ctx.restore();
+  }
+
   if (g.shot) drawFace(g.shot.x, g.shot.y, g.shot.type);
 
   if (!g.over && !g.shot) {
@@ -8169,6 +8305,380 @@ function bubbleGameLoop() {
     drawBubbleGame();
   }
   bubbleGame.rafId = requestAnimationFrame(bubbleGameLoop);
+}
+
+// ---- Odd Roundie Out: spot-the-different-tile ------------------------
+// A grid of identical portraits with exactly one subtly altered (mirrored,
+// tinted, darkened, rotated, or faded) - tap it before the timer runs out.
+// Grid grows and the timer tightens as the round count climbs; three misses
+// (wrong tap or timeout) and it's over.
+const ODD_TELLS = ["hue", "dark", "mirror", "rotate", "fade"];
+let oddGame = null;
+
+function sfxOddCorrect() { playTone(700, { duration: 0.09, type: "sine", gain: 0.045 }); playTone(950, { duration: 0.12, type: "sine", gain: 0.04, delay: 0.06 }); }
+function sfxOddWrong()   { playTone(200, { duration: 0.18, type: "sawtooth", gain: 0.04 }); }
+
+function openOddGame() {
+  const modal = document.getElementById("oddGameModal");
+  const backdrop = document.getElementById("oddGameBackdrop");
+  if (!modal || !backdrop) return;
+  setOverlayOpen(modal, backdrop, true);
+  startOddRound(true);
+}
+
+function closeOddGame() {
+  const modal = document.getElementById("oddGameModal");
+  const backdrop = document.getElementById("oddGameBackdrop");
+  if (modal && backdrop) setOverlayOpen(modal, backdrop, false);
+  if (oddGame) clearTimeout(oddGame.timeoutId);
+  oddGame = null;
+  renderGamesHub();
+}
+
+function oddTellStyle(tell) {
+  switch (tell) {
+    case "hue":    return "filter: hue-rotate(70deg) saturate(1.6);";
+    case "dark":   return "filter: brightness(0.6);";
+    case "mirror": return "transform: scaleX(-1);";
+    case "rotate": return "transform: rotate(12deg);";
+    case "fade":   return "opacity: 0.5;";
+    default:       return "";
+  }
+}
+
+function startOddRound(resetGame) {
+  const overEl = document.getElementById("oddGameOverPanel");
+  if (overEl) overEl.style.display = "none";
+  if (resetGame || !oddGame) {
+    oddGame = { score: 0, lives: 3, round: 0, streak: 0, over: false, timeoutId: null };
+    updateOddScoreUI();
+  }
+  oddGame.over = false;
+  oddGame.round++;
+  const gridSize = oddGame.round <= 2 ? 3 : oddGame.round <= 5 ? 4 : 5;
+  const total = gridSize * gridSize;
+  oddGame.gridSize = gridSize;
+  oddGame.oddIndex = Math.floor(Math.random() * total);
+  oddGame.charId = BUBBLE_TYPES[Math.floor(Math.random() * BUBBLE_TYPES.length)];
+  oddGame.tell = ODD_TELLS[Math.floor(Math.random() * ODD_TELLS.length)];
+  oddGame.timeLimit = Math.max(2200, 6000 - oddGame.round * 220);
+  renderOddGrid();
+  runOddTimer();
+}
+
+function renderOddGrid() {
+  const grid = document.getElementById("oddGrid");
+  if (!grid || !oddGame) return;
+  const n = oddGame.gridSize;
+  grid.style.gridTemplateColumns = `repeat(${n}, 1fr)`;
+  const img = getBubbleFaceImage(oddGame.charId);
+  const src = img && img.src ? img.src : "";
+  const total = n * n;
+  let html = "";
+  for (let i = 0; i < total; i++) {
+    const isOdd = i === oddGame.oddIndex;
+    html += `<button type="button" class="oddTile" data-idx="${i}" onclick="handleOddTileClick(${i})">
+      <img src="${src}" alt="" draggable="false" style="${isOdd ? oddTellStyle(oddGame.tell) : ""}" />
+    </button>`;
+  }
+  grid.innerHTML = html;
+}
+
+function runOddTimer() {
+  const fill = document.getElementById("oddTimerFill");
+  if (fill) {
+    fill.style.transition = "none";
+    fill.style.width = "100%";
+    void fill.offsetWidth; // force reflow so the next transition below actually starts from 100%
+    fill.style.transition = `width ${oddGame.timeLimit}ms linear`;
+    fill.style.width = "0%";
+  }
+  clearTimeout(oddGame.timeoutId);
+  oddGame.timeoutId = setTimeout(() => {
+    if (!oddGame || oddGame.over) return;
+    revealOddTile(oddGame.oddIndex);
+    handleOddMiss();
+  }, oddGame.timeLimit);
+}
+
+function handleOddTileClick(idx) {
+  if (!oddGame || oddGame.over) return;
+  clearTimeout(oddGame.timeoutId);
+  if (idx === oddGame.oddIndex) {
+    oddGame.score += 10 * oddGame.gridSize;
+    oddGame.streak++;
+    flashOddTile(idx, "oddTileCorrect");
+    sfxOddCorrect();
+    if (oddGame.streak >= 10) awardAchievement("eagle_eye");
+    updateOddScoreUI();
+    setTimeout(() => { if (oddGame && !oddGame.over) startOddRound(false); }, 360);
+  } else {
+    flashOddTile(idx, "oddTileWrong");
+    revealOddTile(oddGame.oddIndex);
+    handleOddMiss();
+  }
+}
+
+function flashOddTile(idx, cls) {
+  const grid = document.getElementById("oddGrid");
+  const tile = grid && grid.querySelector(`[data-idx="${idx}"]`);
+  if (tile) tile.classList.add(cls);
+}
+function revealOddTile(idx) { flashOddTile(idx, "oddTileReveal"); }
+
+function handleOddMiss() {
+  if (!oddGame || oddGame.over) return;
+  oddGame.lives--;
+  oddGame.streak = 0;
+  sfxOddWrong();
+  updateOddScoreUI();
+  if (oddGame.lives <= 0) {
+    endOddGame();
+  } else {
+    setTimeout(() => { if (oddGame && !oddGame.over) startOddRound(false); }, 550);
+  }
+}
+
+function updateOddScoreUI() {
+  if (!oddGame) return;
+  const scoreEl = document.getElementById("oddGameScore");
+  if (scoreEl) scoreEl.textContent = String(oddGame.score);
+  const livesEl = document.getElementById("oddGameLives");
+  if (livesEl) livesEl.textContent = "❤️".repeat(Math.max(0, oddGame.lives)) || "💔";
+}
+
+function endOddGame() {
+  if (!oddGame || oddGame.over) return;
+  oddGame.over = true;
+  clearTimeout(oddGame.timeoutId);
+  const played = (parseInt(localStorage.getItem(LS.ODD_GAMES_PLAYED), 10) || 0) + 1;
+  localStorage.setItem(LS.ODD_GAMES_PLAYED, String(played));
+  const prevHigh = parseInt(localStorage.getItem(LS.ODD_HIGH_SCORE), 10) || 0;
+  if (oddGame.score > prevHigh) localStorage.setItem(LS.ODD_HIGH_SCORE, String(oddGame.score));
+  const coinsEarned = Math.min(35, Math.round(oddGame.score / 15));
+  addCoins(coinsEarned);
+  awardAchievement("sharp_eye");
+  const overEl = document.getElementById("oddGameOverPanel");
+  const overText = document.getElementById("oddGameOverText");
+  if (overText) overText.textContent = `Game over - ${oddGame.score} points · +${coinsEarned} 🪙`;
+  if (overEl) overEl.style.display = "flex";
+  sfxBubbleLose();
+}
+
+// ---- Roundie Catch: falling-food catch game --------------------------
+// Food emoji drift down from the top - drag the Roundie paddle left/right
+// to catch them. Three misses ends the round. Same canvas footprint and
+// retina-DPI handling as Roundie Pop (see initBubbleGame for why the
+// devicePixelRatio scaling matters).
+const CATCH_W = BUBBLE_CANVAS_W;
+const CATCH_H = BUBBLE_CANVAS_H;
+const CATCH_PADDLE_W = 54;
+const CATCH_PADDLE_Y = CATCH_H - 36;
+const CATCH_FOODS = ["🍅", "🍡", "🍜", "🥧", "🍰", "🥐", "🍫", "🍗", "🥟", "🍑", "🥞"];
+let catchGame = null;
+
+function sfxCatchGood() { playTone(600, { duration: 0.08, type: "sine", gain: 0.04 }); playTone(800, { duration: 0.1, type: "sine", gain: 0.035, delay: 0.04 }); }
+function sfxCatchMiss() { playTone(180, { duration: 0.14, type: "sawtooth", gain: 0.035 }); }
+
+function openCatchGame() {
+  const modal = document.getElementById("catchGameModal");
+  const backdrop = document.getElementById("catchGameBackdrop");
+  if (!modal || !backdrop) return;
+  setOverlayOpen(modal, backdrop, true);
+  initCatchGame();
+}
+
+function closeCatchGame() {
+  const modal = document.getElementById("catchGameModal");
+  const backdrop = document.getElementById("catchGameBackdrop");
+  if (modal && backdrop) setOverlayOpen(modal, backdrop, false);
+  if (catchGame && catchGame.rafId) cancelAnimationFrame(catchGame.rafId);
+  catchGame = null;
+  renderGamesHub();
+}
+
+function initCatchGame() {
+  const canvas = document.getElementById("catchGameCanvas");
+  if (!canvas) return;
+  const dpr = window.devicePixelRatio || 1;
+  canvas.style.width = CATCH_W + "px";
+  canvas.style.height = CATCH_H + "px";
+  canvas.width = Math.round(CATCH_W * dpr);
+  canvas.height = Math.round(CATCH_H * dpr);
+  const ctx = canvas.getContext("2d");
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = "high";
+
+  catchGame = {
+    canvas, ctx,
+    paddleX: CATCH_W / 2,
+    dragging: false,
+    items: [],
+    effects: [],
+    score: 0,
+    caught: 0,
+    lives: 3,
+    spawnTimer: 0,
+    spawnInterval: 70,
+    over: false,
+    rafId: null,
+    charId: (typeof activeCharacterId !== "undefined" && BUBBLE_TYPES.includes(activeCharacterId)) ? activeCharacterId : "bina",
+  };
+
+  const scoreEl = document.getElementById("catchGameScore");
+  if (scoreEl) scoreEl.textContent = "0";
+  updateCatchLivesUI();
+  const overEl = document.getElementById("catchGameOverPanel");
+  if (overEl) overEl.style.display = "none";
+
+  catchGameLoop();
+}
+
+function catchXFromEvent(e) {
+  const canvas = catchGame.canvas;
+  const rect = canvas.getBoundingClientRect();
+  const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+  return (clientX - rect.left) * (CATCH_W / rect.width);
+}
+
+function initCatchGameControls() {
+  const canvas = document.getElementById("catchGameCanvas");
+  if (!canvas) return;
+  const setPaddle = (e) => {
+    const x = catchXFromEvent(e);
+    catchGame.paddleX = Math.max(CATCH_PADDLE_W / 2, Math.min(CATCH_W - CATCH_PADDLE_W / 2, x));
+  };
+  const start = (e) => {
+    if (!catchGame || catchGame.over) return;
+    catchGame.dragging = true;
+    setPaddle(e);
+    e.preventDefault();
+  };
+  const move = (e) => {
+    if (!catchGame || !catchGame.dragging) return;
+    setPaddle(e);
+    e.preventDefault();
+  };
+  const end = () => { if (catchGame) catchGame.dragging = false; };
+  canvas.addEventListener("pointerdown", start);
+  canvas.addEventListener("pointermove", move);
+  window.addEventListener("pointerup", end);
+}
+
+function updateCatchLivesUI() {
+  const el = document.getElementById("catchGameLives");
+  if (el && catchGame) el.textContent = "❤️".repeat(Math.max(0, catchGame.lives)) || "💔";
+}
+
+function updateCatchGame() {
+  const g = catchGame;
+  if (g.over) return;
+  g.spawnTimer++;
+  const interval = Math.max(26, g.spawnInterval - Math.floor(g.score / 40));
+  if (g.spawnTimer >= interval) {
+    g.spawnTimer = 0;
+    g.items.push({
+      x: 20 + Math.random() * (CATCH_W - 40),
+      y: -20,
+      vy: 1.6 + Math.random() * 0.8 + Math.min(2.5, g.score / 200),
+      emoji: CATCH_FOODS[Math.floor(Math.random() * CATCH_FOODS.length)],
+    });
+  }
+
+  const paddleTop = CATCH_PADDLE_Y - 16;
+  for (let i = g.items.length - 1; i >= 0; i--) {
+    const item = g.items[i];
+    item.y += item.vy;
+    const withinX = Math.abs(item.x - g.paddleX) < (CATCH_PADDLE_W / 2 + 12);
+    if (withinX && item.y >= paddleTop && item.y <= CATCH_PADDLE_Y + 10) {
+      g.items.splice(i, 1);
+      g.score += 10;
+      g.caught++;
+      g.effects.push({ kind: "catch", x: item.x, y: item.y, emoji: item.emoji, start: performance.now() });
+      sfxCatchGood();
+      if (g.caught >= 30) awardAchievement("full_belly");
+      continue;
+    }
+    if (item.y > CATCH_H + 15) {
+      g.items.splice(i, 1);
+      g.lives--;
+      sfxCatchMiss();
+      updateCatchLivesUI();
+      if (g.lives <= 0) { endCatchGame(); return; }
+    }
+  }
+
+  const now = performance.now();
+  g.effects = g.effects.filter(fx => now - fx.start < 400);
+
+  const scoreEl = document.getElementById("catchGameScore");
+  if (scoreEl) scoreEl.textContent = String(g.score);
+}
+
+function drawCatchGame() {
+  const g = catchGame, ctx = g.ctx;
+  ctx.clearRect(0, 0, CATCH_W, CATCH_H);
+
+  ctx.font = "22px sans-serif";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  for (const item of g.items) ctx.fillText(item.emoji, item.x, item.y);
+
+  const now = performance.now();
+  for (const fx of g.effects) {
+    const t = Math.min(1, (now - fx.start) / 400);
+    ctx.save();
+    ctx.globalAlpha = Math.max(0, 1 - t);
+    ctx.font = `${22 + t * 10}px sans-serif`;
+    ctx.fillText(fx.emoji, fx.x, fx.y - t * 26);
+    ctx.restore();
+  }
+
+  const img = getBubbleFaceImage(g.charId);
+  const pw = CATCH_PADDLE_W;
+  ctx.save();
+  ctx.beginPath();
+  ctx.arc(g.paddleX, CATCH_PADDLE_Y, pw / 2, 0, Math.PI * 2);
+  ctx.closePath();
+  ctx.fillStyle = "rgba(255,255,255,0.08)";
+  ctx.fill();
+  ctx.clip();
+  if (img.complete && img.naturalWidth) {
+    ctx.drawImage(img, g.paddleX - pw / 2, CATCH_PADDLE_Y - pw / 2, pw, pw);
+  }
+  ctx.restore();
+  ctx.beginPath();
+  ctx.arc(g.paddleX, CATCH_PADDLE_Y, pw / 2, 0, Math.PI * 2);
+  ctx.strokeStyle = "rgba(255,255,255,0.4)";
+  ctx.lineWidth = 2;
+  ctx.stroke();
+}
+
+function endCatchGame() {
+  if (!catchGame || catchGame.over) return;
+  catchGame.over = true;
+  const played = (parseInt(localStorage.getItem(LS.CATCH_GAMES_PLAYED), 10) || 0) + 1;
+  localStorage.setItem(LS.CATCH_GAMES_PLAYED, String(played));
+  const prevHigh = parseInt(localStorage.getItem(LS.CATCH_HIGH_SCORE), 10) || 0;
+  if (catchGame.score > prevHigh) localStorage.setItem(LS.CATCH_HIGH_SCORE, String(catchGame.score));
+  const coinsEarned = Math.min(35, Math.round(catchGame.score / 15));
+  addCoins(coinsEarned);
+  awardAchievement("good_catch");
+  const overEl = document.getElementById("catchGameOverPanel");
+  const overText = document.getElementById("catchGameOverText");
+  if (overText) overText.textContent = `Game over - ${catchGame.score} points · +${coinsEarned} 🪙`;
+  if (overEl) overEl.style.display = "flex";
+  sfxBubbleLose();
+}
+
+function catchGameLoop() {
+  if (!catchGame) return;
+  if (!document.hidden) {
+    updateCatchGame();
+    drawCatchGame();
+  }
+  catchGame.rafId = requestAnimationFrame(catchGameLoop);
 }
 
 (function boot() {
@@ -8252,6 +8762,7 @@ function bubbleGameLoop() {
     if (isBothMode()) renderBothAccessories();
     initAccessoryPlacerControls(); // drag/scale/rotate wiring for the placer modal - safe to do once even before it's ever opened
     initBubbleGameControls(); // aim/fire wiring for Roundie Pop - likewise safe before the modal's ever opened
+    initCatchGameControls(); // paddle drag wiring for Roundie Catch - same deal
   });
   safeBootStep("theme", () => {
     renderThemeSwatches();  // paint the theme picker + apply any saved manual theme

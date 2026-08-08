@@ -300,12 +300,21 @@
       </div>
       <div class="gameCardPlay">Play ▶</div>
     </div>
-    <div class="gameCard locked">
-      <div class="gameCardIcon">🔒</div>
+    <div class="gameCard" onclick="toggleGamesHubModal(false); openOddGame();">
+      <div class="gameCardIcon">🔍</div>
       <div class="gameCardText">
-        <div class="gameCardTitle">More games coming soon</div>
-        <div class="gameCardDesc">Got an idea? This hub's built to grow.</div>
+        <div class="gameCardTitle">Odd Roundie Out</div>
+        <div class="gameCardDesc" id="oddGameHighScore">Not played yet</div>
       </div>
+      <div class="gameCardPlay">Play ▶</div>
+    </div>
+    <div class="gameCard" onclick="toggleGamesHubModal(false); openCatchGame();">
+      <div class="gameCardIcon">🧺</div>
+      <div class="gameCardText">
+        <div class="gameCardTitle">Roundie Catch</div>
+        <div class="gameCardDesc" id="catchGameHighScore">Not played yet</div>
+      </div>
+      <div class="gameCardPlay">Play ▶</div>
     </div>
   </div>
 
@@ -324,6 +333,45 @@
       <div class="bubbleGameOverPanel" id="bubbleGameOverPanel">
         <div id="bubbleGameOverText">Game over</div>
         <button class="iconBtn" onclick="initBubbleGame()">🔄 play again</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="historyBackdrop" id="oddGameBackdrop" onclick="closeOddGame()" style="display:none;"></div>
+  <div class="historyModal" id="oddGameModal" style="display:none;">
+    <div class="historyModalHeader">
+      <h2>🔍 Odd Roundie Out</h2>
+      <button class="drawerCloseBtn" onclick="closeOddGame()" aria-label="Close Odd Roundie Out">✕</button>
+    </div>
+    <div class="bubbleGameTopBar">
+      <span>Score: <b id="oddGameScore">0</b> &nbsp; <span id="oddGameLives">❤️❤️❤️</span></span>
+      <span class="bubbleGameHint">Tap the one that's different</span>
+    </div>
+    <div class="oddTimerTrack"><div class="oddTimerFill" id="oddTimerFill"></div></div>
+    <div class="bubbleGameCanvasWrap oddGameWrap">
+      <div id="oddGrid" class="oddGrid"></div>
+      <div class="bubbleGameOverPanel" id="oddGameOverPanel">
+        <div id="oddGameOverText">Game over</div>
+        <button class="iconBtn" onclick="startOddRound(true)">🔄 play again</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="historyBackdrop" id="catchGameBackdrop" onclick="closeCatchGame()" style="display:none;"></div>
+  <div class="historyModal" id="catchGameModal" style="display:none;">
+    <div class="historyModalHeader">
+      <h2>🧺 Roundie Catch</h2>
+      <button class="drawerCloseBtn" onclick="closeCatchGame()" aria-label="Close Roundie Catch">✕</button>
+    </div>
+    <div class="bubbleGameTopBar">
+      <span>Score: <b id="catchGameScore">0</b> &nbsp; <span id="catchGameLives">❤️❤️❤️</span></span>
+      <span class="bubbleGameHint">Drag left/right to catch</span>
+    </div>
+    <div class="bubbleGameCanvasWrap">
+      <canvas id="catchGameCanvas"></canvas>
+      <div class="bubbleGameOverPanel" id="catchGameOverPanel">
+        <div id="catchGameOverText">Game over</div>
+        <button class="iconBtn" onclick="initCatchGame()">🔄 play again</button>
       </div>
     </div>
   </div>
@@ -532,6 +580,20 @@
             </div>
           </div>
           <div class="historyMeta" style="margin-top:6px;">Note: top_k isn't part of the standard OpenAI schema - most OpenAI-compatible providers (Cerebras included) accept it, but a few silently ignore an unrecognized field rather than erroring, so if it seems to have no effect, that's likely why.</div>
+        </div>
+      </div>
+    </details>
+
+    <details class="settingsGroup">
+      <summary>🧪 Testing</summary>
+      <div class="settingsGroupBody">
+        <div class="drawerSection">
+          <label for="cheatCodeInput">🪙 redeem a code</label>
+          <div class="historyMeta">For testing things like the accessory shop without grinding coins the normal way.</div>
+          <div class="settingsRow" style="gap:8px; margin-top:6px;">
+            <input id="cheatCodeInput" type="text" placeholder="enter code" style="flex:1;" onkeydown="if(event.key==='Enter'){event.preventDefault();redeemCheatCode();}" />
+            <button class="iconBtn" onclick="redeemCheatCode()">redeem</button>
+          </div>
         </div>
       </div>
     </details>

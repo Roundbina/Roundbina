@@ -2232,3 +2232,43 @@
     color: #fff;
     padding: 20px;
   }
+
+  /* ---- Odd Roundie Out ------------------------------------------------- */
+  .oddTimerTrack {
+    width: 270px;
+    max-width: 100%;
+    height: 5px;
+    margin: 0 auto 8px;
+    border-radius: 3px;
+    background: rgba(255,255,255,0.12);
+    overflow: hidden;
+  }
+  .oddTimerFill {
+    height: 100%;
+    width: 100%;
+    background: linear-gradient(90deg, var(--accent), var(--accent-light));
+    border-radius: 3px;
+  }
+  .oddGameWrap { padding: 10px; box-sizing: border-box; }
+  .oddGrid {
+    display: grid;
+    gap: 6px;
+    width: 100%;
+  }
+  .oddTile {
+    aspect-ratio: 1;
+    border-radius: 10px;
+    border: 1px solid rgba(255,255,255,0.15);
+    background: rgba(255,255,255,0.06);
+    padding: 4px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+  }
+  .oddTile:active { transform: scale(0.94); }
+  .oddTile img { width: 100%; height: 100%; object-fit: contain; }
+  .oddTile.oddTileCorrect { border-color: #6fd58a; box-shadow: 0 0 10px rgba(111,213,138,0.6); }
+  .oddTile.oddTileWrong   { border-color: #e06a6a; box-shadow: 0 0 10px rgba(224,106,106,0.6); }
+  .oddTile.oddTileReveal  { border-color: #ffd76a; box-shadow: 0 0 10px rgba(255,215,106,0.7); }
